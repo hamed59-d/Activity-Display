@@ -10,6 +10,7 @@ import {
   Hourglass,
   Phone,
   PhoneCall,
+  Printer,
   RadioTower,
   RefreshCw,
   ShieldCheck,
@@ -34,6 +35,10 @@ import {
   YAxis,
 } from "recharts";
 import { fetchActivityDisplayData } from "./mockApi";
+import {
+  Area,
+  AreaChart,
+} from "recharts";
 
 const reportOptions = [
   "Voir plus",
@@ -77,6 +82,21 @@ const statIcons = {
   "Agents In Dispo": BookOpenText,
 };
 
+const topStatLabelsFr = {
+  "Current Active Calls": "Appels actifs actuels",
+  "Calls Ringing": "Appels en sonnerie",
+  "Calls Waiting For Agents": "Appels en attente d'agents",
+  "Calls In IVR": "Appels dans le SVI",
+  "Chats Waiting For Agents": "Chats en attente d'agents",
+  "Callback Queue Calls": "Appels de file de rappel",
+  "Agents Logged In": "Agents connectés",
+  "Agents In Calls": "Agents en appel",
+  "Agents Waiting": "Agents en attente",
+  "Paused Agents": "Agents en pause",
+  "Agents In Dead Calls": "Agents en appels morts",
+  "Agents In Dispo": "Agents en dispo",
+};
+
 const sidebarItems = [
   { key: "reports", label: "Rapports", icon: BarChart3 },
   { key: "campaigns", label: "Campagnes", icon: RadioTower },
@@ -112,12 +132,153 @@ function rowColor(color) {
   return map[color] ?? "bg-slate-800/70";
 }
 
-function DashboardKpiCard({ label, value, hint }) {
+function DashboardKpiCard({ label, value, hint, icon: Icon }) {
   return (
-    <div className="rounded-[24px] border border-cyan-500/20 bg-slate-950/60 p-4 backdrop-blur-xl">
-      <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</div>
-      <div className="mt-3 font-mono text-3xl text-cyan-200">{value}</div>
-      {hint ? <div className="mt-2 text-sm text-slate-400">{hint}</div> : null}
+    <div className="rounded-[20px] border border-cyan-500/20 bg-slate-950/60 p-3 backdrop-blur-xl">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500 leading-4">
+            {label}
+          </div>
+          <div className="mt-2 font-mono text-2xl leading-none text-cyan-200">
+            {value}
+          </div>
+          {hint ? <div className="mt-1 text-xs text-slate-400">{hint}</div> : null}
+        </div>
+
+        {Icon ? (
+          <div className="shrink-0 rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-2">
+            <Icon className="h-5 w-5 text-cyan-300" />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function formatDelta(value, suffix = "") {
+  if (!Number.isFinite(value) || value === 0) return `0${suffix}`;
+  return `${value > 0 ? "+" : ""}${value}${suffix}`;
+}
+
+function TinyTrendCard({ title, value, delta, suffix = "", dataKey, data }) {
+  return (
+    <div className="rounded-[22px] border border-cyan-500/20 bg-slate-950/60 p-4 backdrop-blur-xl">
+      <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{title}</div>
+      <div className="mt-2 flex items-end justify-between gap-3">
+        <div>
+          <div className="font-mono text-2xl text-cyan-200">
+            {value}
+            {suffix}
+          </div>
+          <div className="mt-1 text-xs text-slate-400">{delta}</div>
+        </div>
+      </div>
+
+      <div className="mt-3 h-[80px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data}>
+            <Line
+              type="monotone"
+              dataKey={dataKey}
+              stroke="#22d3ee"
+              strokeWidth={2}
+              dot={false}
+            />
+            <Tooltip
+              contentStyle={{
+                background: "#020617",
+                border: "1px solid rgba(34,211,238,0.25)",
+                borderRadius: "16px",
+                color: "#e2e8f0",
+              }}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+async function printElementById(elementId, title = "Graphique") {
+  const element = document.getElementById(elementId);
+  if (!element) return;
+
+  const canvas = await html2canvas(element, {
+    backgroundColor: "#020617",
+    scale: 2,
+    useCORS: true,
+  });
+
+  const imageData = canvas.toDataURL("image/png");
+
+  const printWindow = window.open("", "_blank", "width=1200,height=900");
+  if (!printWindow) return;
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>${title}</title>
+        <style>
+          body {
+            margin: 0;
+            padding: 24px;
+            font-family: Arial, sans-serif;
+            background: white;
+            color: black;
+          }
+          .title {
+            font-size: 20px;
+            margin-bottom: 16px;
+            font-weight: 600;
+          }
+          img {
+            width: 100%;
+            height: auto;
+            display: block;
+            border: 1px solid #ccc;
+          }
+          @page {
+            size: auto;
+            margin: 12mm;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="title">${title}</div>
+        <img src="${imageData}" alt="${title}" />
+        <script>
+          window.onload = () => {
+            window.focus();
+            window.print();
+          };
+        </script>
+      </body>
+    </html>
+  `);
+
+  printWindow.document.close();
+}
+
+function ChartHeader({ icon: Icon, title, printTargetId, printTitle }) {
+  return (
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="flex items-center gap-2">
+        {Icon ? <Icon className="h-5 w-5 text-cyan-300" /> : null}
+        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+          {title}
+        </h2>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => printElementById(printTargetId, printTitle || title)}
+        className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-2 transition hover:bg-cyan-500/20"
+        title="Imprimer ce graphique"
+      >
+        <Printer className="h-4 w-4 text-cyan-300" />
+      </button>
     </div>
   );
 }
@@ -145,6 +306,8 @@ export default function ActivityDisplay() {
   const [graphEnd, setGraphEnd] = useState(() => new Date().toISOString().slice(0, 16));
   const [historyData, setHistoryData] = useState([]);
 
+  const [dataSource, setDataSource] = useState("realtime");
+
 
   useEffect(() => {
     const updateClock = () => {
@@ -166,41 +329,47 @@ export default function ActivityDisplay() {
 
 
   useEffect(() => {
-      if (activeReportLink !== "live-board") return;
+    const needsHistory =
+      activeReportLink === "live-board" || activeReportLink === "dashboards";
 
-      let cancelled = false;
+    if (!needsHistory) return;
 
-      const loadHistory = async () => {
-        try {
-          const url = new URL("http://localhost:3001/api/activity-display/history");
-          url.searchParams.set("mode", graphMode);
-          url.searchParams.set("start", graphStart);
-          url.searchParams.set("end", graphEnd);
+    let cancelled = false;
 
-          const response = await fetch(url.toString(), { cache: "no-store" });
-          if (!response.ok) {
-            throw new Error(`History backend error: ${response.status}`);
-          }
+    const loadHistory = async () => {
+      try {
+        const url = new URL("http://localhost:3001/api/activity-display/history");
+        url.searchParams.set("mode", graphMode);
+        url.searchParams.set("start", graphStart);
+        url.searchParams.set("end", graphEnd);
+        url.searchParams.set("source", dataSource);
 
-          const result = await response.json();
-          if (!cancelled) {
-            setHistoryData(result.points || []);
-          }
-        } catch (err) {
-          if (!cancelled) {
-            console.error(err);
-          }
+        const response = await fetch(url.toString(), { cache: "no-store" });
+
+        if (!response.ok) {
+          throw new Error(`History backend error: ${response.status}`);
         }
-      };
 
-      loadHistory();
-      const id = setInterval(loadHistory, 5000);
+        const result = await response.json();
 
-      return () => {
-        cancelled = true;
-        clearInterval(id);
-      };
-    }, [activeReportLink, graphMode, graphStart, graphEnd]);
+        if (!cancelled) {
+          setHistoryData(result.points || []);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error(err);
+        }
+      }
+    };
+
+    loadHistory();
+    const id = setInterval(loadHistory, dataSource === "realtime" ? 5000 : 15000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [activeReportLink, graphMode, graphStart, graphEnd, dataSource, dashboardData?.updatedAt]);
 
 
   useEffect(() => {
@@ -273,10 +442,50 @@ export default function ActivityDisplay() {
         (dashboardData.topStats || []).map((item) => [item.label, Number(item.value) || 0])
       );
 
+      const agentRows = dashboardData.agentRows || [];
+
+      const countStatus = (status) =>
+        agentRows.filter(
+          (row) => String(row.status || "").toUpperCase() === status
+        ).length;
+
+      const pauseCount = agentRows.filter(
+        (row) =>
+          String(row.status || "").toUpperCase() === "PAUSED" ||
+          (row.pause && row.pause !== "-")
+      ).length;
+
+      const normalizedTopStatsMap = {
+        ...topStatsMap,
+        "Agents Logged In": topStatsMap["Agents Logged In"] || agentRows.length,
+        "Agents In Calls": topStatsMap["Agents In Calls"] || countStatus("INCALL"),
+        "Agents Waiting": topStatsMap["Agents Waiting"] || countStatus("READY"),
+        "Paused Agents": topStatsMap["Paused Agents"] || pauseCount,
+        "Agents In Dispo": topStatsMap["Agents In Dispo"] || countStatus("DISPO"),
+        "Current Active Calls": topStatsMap["Current Active Calls"] || countStatus("INCALL"),
+      };
+
       const topStatsChart = (dashboardData.topStats || []).map((item) => ({
         name: item.label.length > 18 ? `${item.label.slice(0, 18)}…` : item.label,
-        value: Number(item.value) || 0,
+        value: (normalizedTopStatsMap[item.label] ?? Number(item.value)) || 0,
       }));
+
+      const topStatsCards = (dashboardData.topStats || []).map((item) => {
+        const safeValue =
+          Number.isFinite(normalizedTopStatsMap[item.label])
+            ? normalizedTopStatsMap[item.label]
+            : Number.isFinite(Number(item.value))
+              ? Number(item.value)
+              : 0;
+
+        return {
+          key: item.label,
+          label: topStatLabelsFr[item.label] || item.label,
+          value: safeValue,
+          icon: statIcons[item.label] || BarChart3,
+          tone: item.tone || "cyan",
+        };
+      });
 
       const carrierPieData = (dashboardData.carrierStats || [])
         .filter((row) => row[0] !== "TOTALS")
@@ -292,7 +501,8 @@ export default function ActivityDisplay() {
       }));
 
       const summaryMap = Object.fromEntries(dashboardData.summaryLines || []);
-      const droppedPercent = parseFloat(String(summaryMap["Dropped Percent"] || "0").replace("%", "")) || 0;
+      const droppedPercent =
+        parseFloat(String(summaryMap["Dropped Percent"] || "0").replace("%", "")) || 0;
       const avgAgents = parseFloat(String(summaryMap["Avg Agents"] || "0")) || 0;
       const avgWait = parseFloat(String(summaryMap["Agent Avg Wait"] || "0")) || 0;
       const avgCustTime = parseFloat(String(summaryMap["Avg CustTime"] || "0")) || 0;
@@ -336,8 +546,99 @@ export default function ActivityDisplay() {
         busyRate: item.busyRate || 0,
       }));
 
+      const historyFirst = currentHistorySeries[0] || null;
+      const historyLast = currentHistorySeries[currentHistorySeries.length - 1] || null;
+
+      const deltaCards = historyFirst && historyLast
+        ? [
+            {
+              key: "totalCalls",
+              title: "Appels actifs moyens",
+              value: historyLast.totalCalls,
+              delta: formatDelta(historyLast.totalCalls - historyFirst.totalCalls),
+              dataKey: "totalCalls",
+            },
+            {
+              key: "callsRinging",
+              title: "Appels en sonnerie",
+              value: historyLast.callsRinging,
+              delta: formatDelta(historyLast.callsRinging - historyFirst.callsRinging),
+              dataKey: "callsRinging",
+            },
+            {
+              key: "agentsLogged",
+              title: "Agents connectés",
+              value: historyLast.agentsLogged,
+              delta: formatDelta(historyLast.agentsLogged - historyFirst.agentsLogged),
+              dataKey: "agentsLogged",
+            },
+            {
+              key: "droppedPercent",
+              title: "Dropped %",
+              value: historyLast.droppedPercent,
+              delta: formatDelta(
+                Number((historyLast.droppedPercent - historyFirst.droppedPercent).toFixed(2)),
+                "%"
+              ),
+              suffix: "%",
+              dataKey: "droppedPercent",
+            },
+          ]
+        : [];
+
+      const agentStateAreaData = currentHistorySeries.map((item) => ({
+        label: item.label,
+        agentsInCalls: item.agentsInCalls || 0,
+        agentsWaiting: item.agentsWaiting || 0,
+        pausedAgents: item.pausedAgents || 0,
+        agentsInDispo: item.agentsInDispo || 0,
+      }));
+
+      const serviceMiniCards = historyFirst && historyLast
+        ? [
+            {
+              key: "avgWait",
+              title: "Attente moyenne",
+              value: historyLast.avgWait,
+              delta: formatDelta(Number((historyLast.avgWait - historyFirst.avgWait).toFixed(2)), "s"),
+              suffix: "s",
+              dataKey: "avgWait",
+            },
+            {
+              key: "avgCustTime",
+              title: "CustTime moyen",
+              value: historyLast.avgCustTime,
+              delta: formatDelta(
+                Number((historyLast.avgCustTime - historyFirst.avgCustTime).toFixed(2)),
+                "s"
+              ),
+              suffix: "s",
+              dataKey: "avgCustTime",
+            },
+            {
+              key: "answerRate",
+              title: "Taux réponse",
+              value: historyLast.answerRate,
+              delta: formatDelta(
+                Number((historyLast.answerRate - historyFirst.answerRate).toFixed(2)),
+                "%"
+              ),
+              suffix: "%",
+              dataKey: "answerRate",
+            },
+            {
+              key: "busyRate",
+              title: "Busy",
+              value: historyLast.busyRate,
+              delta: formatDelta(Number((historyLast.busyRate - historyFirst.busyRate).toFixed(2)), "%"),
+              suffix: "%",
+              dataKey: "busyRate",
+            },
+          ]
+        : [];
+
       const headline = {
-        totalCalls: topStatsMap["Current Active Calls"] || 0,
+        totalCalls: normalizedTopStatsMap["Current Active Calls"] || 0,
         avgAnswerRate:
           parseFloat(
             String(
@@ -346,17 +647,21 @@ export default function ActivityDisplay() {
           ) || 0,
         avgWait: avgWait || 0,
         totalDropped: droppedPercent || 0,
-        agentsLogged: topStatsMap["Agents Logged In"] || 0,
-        callsRinging: topStatsMap["Calls Ringing"] || 0,
+        agentsLogged: normalizedTopStatsMap["Agents Logged In"] || 0,
+        callsRinging: normalizedTopStatsMap["Calls Ringing"] || 0,
       };
 
       return {
         topStatsChart,
+        topStatsCards,
         carrierPieData,
         agentCallsData,
         serviceLevelData,
         currentGraphsAgents,
         currentHistorySeries,
+        deltaCards,
+        agentStateAreaData,
+        serviceMiniCards,
         headline,
       };
       }, [dashboardData, historyData]);
@@ -576,32 +881,89 @@ export default function ActivityDisplay() {
                       </div>
                     </div>
 
+                    <div className="grid gap-3 md:grid-cols-4">
+                      <div>
+                        <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                          Mode
+                        </label>
+                        <select
+                          value={graphMode}
+                          onChange={(e) => setGraphMode(e.target.value)}
+                          className="w-full rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+                        >
+                          {["Sec", "Min", "HH", "DD", "W", "MM", "YYYY"].map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                          Start date
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={graphStart}
+                          onChange={(e) => setGraphStart(e.target.value)}
+                          className="w-full rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                          End date
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={graphEnd}
+                          onChange={(e) => setGraphEnd(e.target.value)}
+                          className="w-full rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                          Data source
+                        </label>
+                        <select
+                          value={dataSource}
+                          onChange={(e) => setDataSource(e.target.value)}
+                          className="w-full rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+                        >
+                          <option value="realtime">RealTime</option>
+                          <option value="record">Record</option>
+                        </select>
+                      </div>
+                    </div>
+
                     <div className="mt-3 font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
                       Dernière actualisation des données : {dashboardData.updatedAt}
                     </div>
                   </section>
 
-                  <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                    <DashboardKpiCard
-                      label="Agents connectés"
-                      value={chartsData.headline.agentsLogged}
-                    />
-                    <DashboardKpiCard
-                      label="Appels actifs"
-                      value={chartsData.headline.totalCalls}
-                    />
-                    <DashboardKpiCard
-                      label="Appels en sonnerie"
-                      value={chartsData.headline.callsRinging}
-                    />
-                    <DashboardKpiCard
-                      label="Dropped %"
-                      value={`${chartsData.headline.totalDropped}%`}
-                    />
+                  <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                    {chartsData.topStatsCards.map((card) => (
+                      <DashboardKpiCard
+                        key={card.key}
+                        label={card.label}
+                        value={card.value}
+                        icon={card.icon}
+                      />
+                    ))}
                   </section>
 
                   <section className="grid gap-4 xl:grid-cols-2">
                     <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <ChartHeader
+                        icon={PhoneCall}
+                        title="Nombre d'appels passés par agent"
+                        printTargetId="print-agent-calls-chart"
+                        printTitle="Nombre d'appels passés par agent"
+                      />
+                      <div id="print-agent-calls-chart">
+                        <div className="h-[320px]">
                       <div className="mb-4 flex items-center gap-2">
                         <PhoneCall className="h-5 w-5 text-cyan-300" />
                         <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
@@ -631,8 +993,19 @@ export default function ActivityDisplay() {
                         </ResponsiveContainer>
                       </div>
                     </div>
+                    </div>
+                      </div>
 
                     <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <ChartHeader
+                        icon={Clock3}
+                        title="Évolution temporelle // Intervalle sélectionné"
+                        printTargetId="print-history-chart"
+                        printTitle="Évolution temporelle"
+                      />
+
+                      <div id="print-history-chart">
+                        <div className="h-[320px]">
                       <div className="mb-4 flex items-center gap-2">
                         <Clock3 className="h-5 w-5 text-cyan-300" />
                         <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
@@ -645,7 +1018,8 @@ export default function ActivityDisplay() {
                           <LineChart data={chartsData.currentHistorySeries}>
                             <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
                             <XAxis dataKey="label" stroke="#94a3b8" />
-                            <YAxis stroke="#94a3b8" />
+                            <YAxis yAxisId="main" stroke="#94a3b8" />
+                            <YAxis yAxisId="rate" orientation="right" stroke="#94a3b8" domain={[0, "auto"]} />
                             <Tooltip
                               contentStyle={{
                                 background: "#020617",
@@ -655,15 +1029,99 @@ export default function ActivityDisplay() {
                               }}
                             />
                             <Legend />
-                            <Line type="monotone" dataKey="totalCalls" name="Appels actifs" stroke="#22d3ee" strokeWidth={2} dot={false} />
-                            <Line type="monotone" dataKey="callsRinging" name="Appels en sonnerie" stroke="#38bdf8" strokeWidth={2} dot={false} />
-                            <Line type="monotone" dataKey="agentsLogged" name="Agents connectés" stroke="#10b981" strokeWidth={2} dot={false} />
-                            <Line type="monotone" dataKey="droppedPercent" name="Dropped %" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                            <Line yAxisId="main" type="monotone" dataKey="agentsLogged" name="Agents connectés" stroke="#10b981" strokeWidth={2} dot={false} />
+                            <Line yAxisId="main" type="monotone" dataKey="totalCalls" name="Appels actifs" stroke="#22d3ee" strokeWidth={2.5} dot={false} />
+                            <Line yAxisId="main" type="monotone" dataKey="callsRinging" name="Appels en sonnerie" stroke="#38bdf8" strokeWidth={2} dot={false} />
+                            <Line yAxisId="rate" type="monotone" dataKey="droppedPercent" name="Dropped %" stroke="#f59e0b" strokeWidth={2} dot={false} />
                           </LineChart>
                         </ResponsiveContainer>
                       </div>
                     </div>
+                    </div></div>
                   </section>
+
+                  {dataSource === "record" && chartsData.currentHistorySeries.length > 1 && (
+                    <section className="mt-5 grid gap-5">
+                      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                        {chartsData.deltaCards.map((card) => (
+                          <TinyTrendCard
+                            key={card.key}
+                            title={card.title}
+                            value={card.value}
+                            delta={card.delta}
+                            suffix={card.suffix || ""}
+                            dataKey={card.dataKey}
+                            data={chartsData.currentHistorySeries}
+                          />
+                        ))}
+                      </div>
+
+                      <div className="grid gap-5 xl:grid-cols-2">
+                        <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                          <ChartHeader
+                            icon={Users}
+                            title="Répartition des états agents // période"
+                            printTargetId="print-agent-state-area"
+                            printTitle="Répartition des états agents"
+                          />
+                          <div id="print-history-chart">
+                          <div className="h-[320px]">
+                          <div className="mb-4 flex items-center gap-2">
+                            <Users className="h-5 w-5 text-cyan-300" />
+                            <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+                              Répartition des états agents // période
+                            </h2>
+                          </div>
+
+                          <div className="h-[320px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <AreaChart data={chartsData.agentStateAreaData}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
+                                <XAxis dataKey="label" stroke="#94a3b8" />
+                                <YAxis stroke="#94a3b8" />
+                                <Tooltip
+                                  contentStyle={{
+                                    background: "#020617",
+                                    border: "1px solid rgba(34,211,238,0.25)",
+                                    borderRadius: "16px",
+                                    color: "#e2e8f0",
+                                  }}
+                                />
+                                <Legend />
+                                <Area type="monotone" dataKey="agentsInCalls" name="Agents en appels" stackId="1" stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.45} />
+                                <Area type="monotone" dataKey="agentsWaiting" name="Agents en attente" stackId="1" stroke="#84cc16" fill="#84cc16" fillOpacity={0.45} />
+                                <Area type="monotone" dataKey="pausedAgents" name="Agents en pause" stackId="1" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.45} />
+                                <Area type="monotone" dataKey="agentsInDispo" name="Agents en dispo" stackId="1" stroke="#eab308" fill="#eab308" fillOpacity={0.45} />
+                              </AreaChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div></div></div>
+
+                        <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                          <div className="mb-4 flex items-center gap-2">
+                            <TrendingUp className="h-5 w-5 text-cyan-300" />
+                            <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+                              KPI service // mini tendances
+                            </h2>
+                          </div>
+
+                          <div className="grid gap-4 md:grid-cols-2">
+                            {chartsData.serviceMiniCards.map((card) => (
+                              <TinyTrendCard
+                                key={card.key}
+                                title={card.title}
+                                value={card.value}
+                                delta={card.delta}
+                                suffix={card.suffix || ""}
+                                dataKey={card.dataKey}
+                                data={chartsData.currentHistorySeries}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  )}
 
                   <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
                     <div className="mb-4 flex items-center gap-2">
@@ -899,23 +1357,15 @@ export default function ActivityDisplay() {
                     </div>
                   </section>
 
-                  <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                    <DashboardKpiCard
-                      label="Agents connectés"
-                      value={chartsData.headline.agentsLogged}
-                    />
-                    <DashboardKpiCard
-                      label="Appels actifs"
-                      value={chartsData.headline.totalCalls}
-                    />
-                    <DashboardKpiCard
-                      label="Appels en sonnerie"
-                      value={chartsData.headline.callsRinging}
-                    />
-                    <DashboardKpiCard
-                      label="Dropped %"
-                      value={`${chartsData.headline.totalDropped}%`}
-                    />
+                  <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                    {chartsData.topStatsCards.map((card) => (
+                      <DashboardKpiCard
+                        key={card.key}
+                        label={card.label}
+                        value={card.value}
+                        icon={card.icon}
+                      />
+                    ))}
                   </section>
 
 
@@ -1074,23 +1524,15 @@ export default function ActivityDisplay() {
                     </div>
                   </section>
 
-                  <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                    <DashboardKpiCard
-                      label="Agents connectés"
-                      value={chartsData.headline.agentsLogged}
-                    />
-                    <DashboardKpiCard
-                      label="Appels actifs"
-                      value={chartsData.headline.totalCalls}
-                    />
-                    <DashboardKpiCard
-                      label="Appels en sonnerie"
-                      value={chartsData.headline.callsRinging}
-                    />
-                    <DashboardKpiCard
-                      label="Dropped %"
-                      value={`${chartsData.headline.totalDropped}%`}
-                    />
+                  <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                    {chartsData.topStatsCards.map((card) => (
+                      <DashboardKpiCard
+                        key={card.key}
+                        label={card.label}
+                        value={card.value}
+                        icon={card.icon}
+                      />
+                    ))}
                   </section>
 
                   <section className="grid gap-4 xl:grid-cols-2">
