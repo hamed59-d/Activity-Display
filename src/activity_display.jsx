@@ -130,9 +130,21 @@ export default function ActivityDisplay() {
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [showSummarySystem, setShowSummarySystem] = useState(true);
+  const [showOperatorStats, setShowOperatorStats] = useState(true);
   const [historyRange, setHistoryRange] = useState("daily");
 
   const isDashboardsView = activeReportLink === "dashboards";
+
+
+  const [graphMode, setGraphMode] = useState("Min");
+  const [graphStart, setGraphStart] = useState(() => {
+    const d = new Date(Date.now() - 60 * 60 * 1000);
+    return d.toISOString().slice(0, 16);
+  });
+  const [graphEnd, setGraphEnd] = useState(() => new Date().toISOString().slice(0, 16));
+  const [historyData, setHistoryData] = useState([]);
+
 
   useEffect(() => {
     const updateClock = () => {
@@ -151,6 +163,45 @@ export default function ActivityDisplay() {
     const id = setInterval(updateClock, 1000);
     return () => clearInterval(id);
   }, []);
+
+
+  useEffect(() => {
+      if (activeReportLink !== "live-board") return;
+
+      let cancelled = false;
+
+      const loadHistory = async () => {
+        try {
+          const url = new URL("http://localhost:3001/api/activity-display/history");
+          url.searchParams.set("mode", graphMode);
+          url.searchParams.set("start", graphStart);
+          url.searchParams.set("end", graphEnd);
+
+          const response = await fetch(url.toString(), { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`History backend error: ${response.status}`);
+          }
+
+          const result = await response.json();
+          if (!cancelled) {
+            setHistoryData(result.points || []);
+          }
+        } catch (err) {
+          if (!cancelled) {
+            console.error(err);
+          }
+        }
+      };
+
+      loadHistory();
+      const id = setInterval(loadHistory, 5000);
+
+      return () => {
+        cancelled = true;
+        clearInterval(id);
+      };
+    }, [activeReportLink, graphMode, graphStart, graphEnd]);
+
 
   useEffect(() => {
     let mounted = true;
@@ -180,106 +231,137 @@ export default function ActivityDisplay() {
     };
 
     loadData(true);
-    const interval = setInterval(() => loadData(false), 3000);
+    const refreshMs = activeReportLink === "live-board" ? 5000 : 1000;
+    const interval = setInterval(() => loadData(false), refreshMs);
 
     return () => {
       mounted = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [activeReportLink]);
 
   const reportTitle = useMemo(() => {
     if (activeReportLink === "summary") return "Rapport principal en temps réel";
-    if (activeReportLink === "live-board") return "Rapport principal en temps réel // Tableau en direct";
+    if (activeReportLink === "live-board") return "Rapport principal en temps réel // Graphes Courants";
     if (activeReportLink === "agents-table") return "Rapport principal en temps réel // Temps d'appel des agents";
     if (activeReportLink === "dashboards") return "Tableaux de bord // Analytique des rapports";
     return `Rapport principal en temps réel // ${activeReportLink.replaceAll("-", " ")}`;
   }, [activeReportLink]);
 
   const chartsData = useMemo(() => {
-    if (!dashboardData) return null;
+      if (!dashboardData) return null;
 
-    const topStatsChart = dashboardData.topStats.map((item) => ({
-      name: item.label
-        .replace(" d'agents", "")
-        .replace(" actuels", "")
-        .replace("Appels de file de ", "File "),
-      value: item.value,
-    }));
+      const toSeconds = (value) => {
+        const text = String(value || "").trim();
+        if (!text || text === "-") return 0;
 
-    const carrierPieData = dashboardData.carrierStats
-      .filter((row) => row[0] !== "TOTALS")
-      .map((row) => ({ name: row[0], value: Number(row[1]) || 0 }));
+        const parts = text.split(":").map((x) => parseInt(x, 10));
+        if (parts.some(Number.isNaN)) return 0;
 
-    const agentCallsData = dashboardData.agentRows.map((row) => ({
-      name: row.user.length > 10 ? `${row.user.slice(0, 10)}…` : row.user,
-      calls: row.calls,
-      latency: parseInt(String(row.latency).replace("ms", ""), 10),
-    }));
+        if (parts.length === 2) {
+          return parts[0] * 60 + parts[1];
+        }
 
-    const summaryChart = dashboardData.summaryLines
-      .filter(([, value]) => !Number.isNaN(Number(String(value).replace("%", "").replace(/[^0-9.]/g, ""))))
-      .slice(0, 6)
-      .map(([label, value]) => ({
-        name: label,
-        value: Number(String(value).replace("%", "").replace(/[^0-9.]/g, "")),
+        if (parts.length === 3) {
+          return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        }
+
+        return 0;
+      };
+
+      const topStatsMap = Object.fromEntries(
+        (dashboardData.topStats || []).map((item) => [item.label, Number(item.value) || 0])
+      );
+
+      const topStatsChart = (dashboardData.topStats || []).map((item) => ({
+        name: item.label.length > 18 ? `${item.label.slice(0, 18)}…` : item.label,
+        value: Number(item.value) || 0,
       }));
 
-    const historySource =
-      historyRange === "weekly" ? dashboardData.historical?.weekly ?? [] : dashboardData.historical?.daily ?? [];
+      const carrierPieData = (dashboardData.carrierStats || [])
+        .filter((row) => row[0] !== "TOTALS")
+        .map((row) => ({
+          name: row[0],
+          value: Number(row[1]) || 0,
+        }));
 
-    const callVolumeTrend = historySource.map((item) => ({
-      label: item.label,
-      totalCalls: item.totalCalls,
-      answered: item.answered,
-      busy: item.busy,
-      dropped: item.dropped,
-    }));
+      const agentCallsData = (dashboardData.agentRows || []).map((row) => ({
+        name: row.user?.length > 10 ? `${row.user.slice(0, 10)}…` : row.user,
+        calls: Number(row.calls) || 0,
+        latency: parseInt(String(row.latency || "").replace("ms", ""), 10) || 0,
+      }));
 
-    const serviceTrend = historySource.map((item) => ({
-      label: item.label,
-      answerRate: item.answerRate,
-      dropRate: item.dropRate,
-      avgWait: item.avgWait,
-      avgHandle: item.avgHandle,
-    }));
+      const summaryMap = Object.fromEntries(dashboardData.summaryLines || []);
+      const droppedPercent = parseFloat(String(summaryMap["Dropped Percent"] || "0").replace("%", "")) || 0;
+      const avgAgents = parseFloat(String(summaryMap["Avg Agents"] || "0")) || 0;
+      const avgWait = parseFloat(String(summaryMap["Agent Avg Wait"] || "0")) || 0;
+      const avgCustTime = parseFloat(String(summaryMap["Avg CustTime"] || "0")) || 0;
 
-    const campaignComparison = (dashboardData.historical?.campaigns ?? []).map((item) => ({
-      name: item.name,
-      calls: item.calls,
-      answerRate: item.answerRate,
-      avgWait: item.avgWait,
-    }));
+      const serviceLevelData = [
+        { name: "Dropped %", value: droppedPercent },
+        { name: "Avg Agents", value: avgAgents },
+        { name: "Avg Wait", value: avgWait },
+        { name: "Avg CustTime", value: avgCustTime },
+      ];
 
-    const headline = historySource.length
-      ? {
-          totalCalls: historySource.reduce((sum, item) => sum + item.totalCalls, 0),
-          avgAnswerRate: (
-            historySource.reduce((sum, item) => sum + item.answerRate, 0) / historySource.length
-          ).toFixed(1),
-          avgWait: Math.round(
-            historySource.reduce((sum, item) => sum + item.avgWait, 0) / historySource.length
-          ),
-          totalDropped: historySource.reduce((sum, item) => sum + item.dropped, 0),
-        }
-      : {
-          totalCalls: 0,
-          avgAnswerRate: "0.0",
-          avgWait: 0,
-          totalDropped: 0,
+      const currentGraphsAgents = (dashboardData.agentRows || []).map((row) => {
+        const pauseSeconds = toSeconds(row.pause);
+        const loginSeconds = toSeconds(row.mmss);
+
+        return {
+          name: row.user?.length > 12 ? `${row.user.slice(0, 12)}…` : row.user,
+          fullName: row.user || "",
+          calls: Number(row.calls) || 0,
+          minAppel: Number(row.calls) || 0,
+          minPauses: pauseSeconds,
+          minLogin: loginSeconds,
+          pauseLabel: row.pause || "-",
+          loginLabel: row.mmss || "-",
         };
+      });
 
-    return {
-      topStatsChart,
-      carrierPieData,
-      agentCallsData,
-      summaryChart,
-      callVolumeTrend,
-      serviceTrend,
-      campaignComparison,
-      headline,
-    };
-  }, [dashboardData, historyRange]);
+      const currentHistorySeries = (historyData || []).map((item) => ({
+        label: item.label,
+        totalCalls: item.totalCalls || 0,
+        callsRinging: item.callsRinging || 0,
+        agentsLogged: item.agentsLogged || 0,
+        agentsInCalls: item.agentsInCalls || 0,
+        agentsWaiting: item.agentsWaiting || 0,
+        pausedAgents: item.pausedAgents || 0,
+        agentsInDispo: item.agentsInDispo || 0,
+        droppedPercent: item.droppedPercent || 0,
+        avgWait: item.avgWait || 0,
+        avgCustTime: item.avgCustTime || 0,
+        answerRate: item.answerRate || 0,
+        busyRate: item.busyRate || 0,
+      }));
+
+      const headline = {
+        totalCalls: topStatsMap["Current Active Calls"] || 0,
+        avgAnswerRate:
+          parseFloat(
+            String(
+              (dashboardData.carrierStats || []).find((row) => row[0] === "ANSWER")?.[2] || "0"
+            ).replace("%", "")
+          ) || 0,
+        avgWait: avgWait || 0,
+        totalDropped: droppedPercent || 0,
+        agentsLogged: topStatsMap["Agents Logged In"] || 0,
+        callsRinging: topStatsMap["Calls Ringing"] || 0,
+      };
+
+      return {
+        topStatsChart,
+        carrierPieData,
+        agentCallsData,
+        serviceLevelData,
+        currentGraphsAgents,
+        currentHistorySeries,
+        headline,
+      };
+      }, [dashboardData, historyData]);
+
+
 
   return (
     <div className="min-h-screen overflow-hidden bg-[#050912] text-slate-100">
@@ -393,7 +475,7 @@ export default function ActivityDisplay() {
                       : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
                   }`}
                 >
-                  Tableau en direct
+                  Graphes Courants
                 </button>
 
                 <button
@@ -437,7 +519,257 @@ export default function ActivityDisplay() {
                 </section>
               )}
 
-              {!loading && dashboardData && !isDashboardsView && (
+              {!loading && dashboardData && activeReportLink === "live-board" && chartsData && (
+                <>
+                  <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 shadow-[0_0_35px_rgba(34,211,238,0.06)] backdrop-blur-xl">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div>
+                        <h1 className="font-mono text-lg uppercase tracking-[0.22em] text-cyan-200">
+                          {reportTitle}
+                        </h1>
+                        <p className="mt-1 text-sm text-slate-400">
+                          Vue dédiée aux graphes courants avec contrôle de granularité et intervalle temporel.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-[auto_auto_auto]">
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                            Mode
+                          </div>
+                          <select
+                            value={graphMode}
+                            onChange={(e) => setGraphMode(e.target.value)}
+                            className="rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-sm text-cyan-100 outline-none"
+                          >
+                            {["Sec", "Min", "HH", "DD", "W", "MM", "YYYY"].map((mode) => (
+                              <option key={mode} value={mode}>
+                                {mode}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                            Start date
+                          </div>
+                          <input
+                            type="datetime-local"
+                            value={graphStart}
+                            onChange={(e) => setGraphStart(e.target.value)}
+                            className="rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-sm text-cyan-100 outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                            End date
+                          </div>
+                          <input
+                            type="datetime-local"
+                            value={graphEnd}
+                            onChange={(e) => setGraphEnd(e.target.value)}
+                            className="rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-sm text-cyan-100 outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 font-mono text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                      Dernière actualisation des données : {dashboardData.updatedAt}
+                    </div>
+                  </section>
+
+                  <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    <DashboardKpiCard
+                      label="Agents connectés"
+                      value={chartsData.headline.agentsLogged}
+                    />
+                    <DashboardKpiCard
+                      label="Appels actifs"
+                      value={chartsData.headline.totalCalls}
+                    />
+                    <DashboardKpiCard
+                      label="Appels en sonnerie"
+                      value={chartsData.headline.callsRinging}
+                    />
+                    <DashboardKpiCard
+                      label="Dropped %"
+                      value={`${chartsData.headline.totalDropped}%`}
+                    />
+                  </section>
+
+                  <section className="grid gap-4 xl:grid-cols-2">
+                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <div className="mb-4 flex items-center gap-2">
+                        <PhoneCall className="h-5 w-5 text-cyan-300" />
+                        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+                          Nombre d'appels passés par agent
+                        </h2>
+                      </div>
+
+                      <div className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={chartsData.currentGraphsAgents}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
+                            <XAxis dataKey="name" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              formatter={(value) => [value, "Appels"]}
+                              labelFormatter={(label, payload) => payload?.[0]?.payload?.fullName || label}
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Legend />
+                            <Bar dataKey="calls" name="Appels" fill="#22d3ee" radius={[8, 8, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <div className="mb-4 flex items-center gap-2">
+                        <Clock3 className="h-5 w-5 text-cyan-300" />
+                        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+                          Évolution temporelle // intervalle sélectionné
+                        </h2>
+                      </div>
+
+                      <div className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={chartsData.currentHistorySeries}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
+                            <XAxis dataKey="label" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Legend />
+                            <Line type="monotone" dataKey="totalCalls" name="Appels actifs" stroke="#22d3ee" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="callsRinging" name="Appels en sonnerie" stroke="#38bdf8" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="agentsLogged" name="Agents connectés" stroke="#10b981" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="droppedPercent" name="Dropped %" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                    <div className="mb-4 flex items-center gap-2">
+                      <Users className="h-5 w-5 text-cyan-300" />
+                      <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+                        Détail agents // valeurs courantes
+                      </h2>
+                    </div>
+
+                    <div className="overflow-auto rounded-2xl border border-white/5">
+                      <table className="min-w-full text-left text-xs">
+                        <thead className="bg-slate-950/90 text-slate-300">
+                          <tr>
+                            <th className="px-3 py-3 font-mono uppercase tracking-[0.16em]">Agent</th>
+                            <th className="px-3 py-3 font-mono uppercase tracking-[0.16em]">Appels</th>
+                            <th className="px-3 py-3 font-mono uppercase tracking-[0.16em]">Pause</th>
+                            <th className="px-3 py-3 font-mono uppercase tracking-[0.16em]">Temps login</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {chartsData.currentGraphsAgents.map((row, index) => (
+                            <tr
+                              key={`${row.fullName}-${index}`}
+                              className={index % 2 === 0 ? "bg-white/[0.02]" : "bg-transparent"}
+                            >
+                              <td className="px-3 py-2 text-slate-200">{row.fullName}</td>
+                              <td className="px-3 py-2 font-mono text-cyan-300">{row.calls}</td>
+                              <td className="px-3 py-2 font-mono text-amber-300">{row.pauseLabel}</td>
+                              <td className="px-3 py-2 font-mono text-indigo-300">{row.loginLabel}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  <section className="grid gap-4 xl:grid-cols-2">
+                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <div className="mb-4 flex items-center gap-2">
+                        <Users className="h-5 w-5 text-cyan-300" />
+                        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+                          Tendances agents // intervalle
+                        </h2>
+                      </div>
+
+                      <div className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={chartsData.currentHistorySeries}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
+                            <XAxis dataKey="label" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Legend />
+                            <Line type="monotone" dataKey="agentsInCalls" name="Agents en appels" stroke="#22d3ee" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="agentsWaiting" name="Agents en attente" stroke="#84cc16" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="pausedAgents" name="Agents en pause" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="agentsInDispo" name="Agents en dispo" stroke="#eab308" strokeWidth={2} dot={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <div className="mb-4 flex items-center gap-2">
+                        <TrendingUp className="h-5 w-5 text-cyan-300" />
+                        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+                          Service level // intervalle
+                        </h2>
+                      </div>
+
+                      <div className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={chartsData.currentHistorySeries}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
+                            <XAxis dataKey="label" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Legend />
+                            <Line type="monotone" dataKey="answerRate" name="Taux réponse %" stroke="#22d3ee" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="busyRate" name="Busy %" stroke="#6366f1" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="avgWait" name="Attente moyenne" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="avgCustTime" name="CustTime moyen" stroke="#10b981" strokeWidth={2} dot={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </section>
+
+                </>
+              )}
+
+              {!loading && dashboardData && activeReportLink === "summary" && (
                 <>
                   <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 shadow-[0_0_35px_rgba(34,211,238,0.06)] backdrop-blur-xl">
                     <div className="flex flex-wrap items-center justify-between gap-4">
@@ -468,114 +800,124 @@ export default function ActivityDisplay() {
 
                     <div className="mt-5 grid gap-4 xl:grid-cols-[1.25fr_0.95fr]">
                       <div className="rounded-3xl border border-cyan-500/15 bg-slate-900/70 p-4">
-                        <div className="mb-3 font-mono text-xs uppercase tracking-[0.28em] text-cyan-300">
-                          Résumé système
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div className="font-mono text-xs uppercase tracking-[0.28em] text-cyan-300">
+                            Résumé système
+                          </div>
+
+                          <button
+                            onClick={() => setShowSummarySystem((prev) => !prev)}
+                            className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-slate-300 transition hover:border-cyan-400/35 hover:bg-cyan-400/10 hover:text-cyan-200"
+                          >
+                            {showSummarySystem ? "Réduire" : "Afficher"}
+                          </button>
                         </div>
 
-                        <div className="grid gap-x-6 gap-y-2 md:grid-cols-2 xl:grid-cols-4">
-                          {dashboardData.summaryLines.map(([label, value]) => (
-                            <div
-                              key={label}
-                              className="rounded-2xl border border-white/5 bg-white/[0.02] px-3 py-2"
-                            >
-                              <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                                {label}
+                        {showSummarySystem && (
+                          <div className="grid gap-x-6 gap-y-2 md:grid-cols-2 xl:grid-cols-4">
+                            {dashboardData.summaryLines.map(([label, value]) => (
+                              <div
+                                key={label}
+                                className="rounded-2xl border border-white/5 bg-white/[0.02] px-3 py-2"
+                              >
+                                <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                                  {label}
+                                </div>
+                                <div className="mt-1 font-mono text-sm text-slate-100">{value}</div>
                               </div>
-                              <div className="mt-1 font-mono text-sm text-slate-100">{value}</div>
-                            </div>
-                          ))}
-                        </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
 
                       <div className="rounded-3xl border border-cyan-500/15 bg-slate-900/70 p-4">
-                        <div className="mb-3 flex items-center justify-between">
+                        <div className="mb-3 flex items-center justify-between gap-3">
                           <div className="font-mono text-xs uppercase tracking-[0.28em] text-cyan-300">
                             Statistiques opérateur
                           </div>
-                          <div className="text-[11px] uppercase tracking-[0.15em] text-slate-500">
-                            Statut de raccrochage / 24 heures / 6 heures / 1 heure / 15 min / 1 min
-                          </div>
+
+                          <button
+                            onClick={() => setShowOperatorStats((prev) => !prev)}
+                            className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-slate-300 transition hover:border-cyan-400/35 hover:bg-cyan-400/10 hover:text-cyan-200"
+                          >
+                            {showOperatorStats ? "Réduire" : "Afficher"}
+                          </button>
                         </div>
 
-                        <div className="overflow-auto rounded-2xl border border-white/5">
-                          <table className="min-w-full text-left text-xs">
-                            <thead className="bg-slate-950/90 text-slate-300">
-                              <tr>
-                                <th className="px-3 py-2 font-mono uppercase tracking-[0.16em]">
-                                  Statut de raccrochage
-                                </th>
-                                <th className="px-3 py-2">24H</th>
-                                <th className="px-3 py-2">%</th>
-                                <th className="px-3 py-2">6H</th>
-                                <th className="px-3 py-2">%</th>
-                                <th className="px-3 py-2">1H</th>
-                                <th className="px-3 py-2">%</th>
-                                <th className="px-3 py-2">15M</th>
-                                <th className="px-3 py-2">%</th>
-                                <th className="px-3 py-2">1M</th>
-                                <th className="px-3 py-2">%</th>
-                              </tr>
-                            </thead>
+                        {showOperatorStats && (
+                          <>
+                            <div className="mb-3 text-[11px] uppercase tracking-[0.15em] text-slate-500">
+                              Statut de raccrochage / 24 heures / 6 heures / 1 heure / 15 min / 1 min
+                            </div>
 
-                            <tbody>
-                              {dashboardData.carrierStats.map((row, index) => (
-                                <tr
-                                  key={row[0]}
-                                  className={index % 2 === 0 ? "bg-white/[0.02]" : "bg-transparent"}
-                                >
-                                  {row.map((cell, i) => (
-                                    <td
-                                      key={`${row[0]}-${i}`}
-                                      className={`px-3 py-2 ${
-                                        i === 0
-                                          ? "font-semibold text-slate-200"
-                                          : "font-mono text-slate-400"
-                                      }`}
+                            <div className="overflow-auto rounded-2xl border border-white/5">
+                              <table className="min-w-full text-left text-xs">
+                                <thead className="bg-slate-950/90 text-slate-300">
+                                  <tr>
+                                    <th className="px-3 py-2 font-mono uppercase tracking-[0.16em]">
+                                      Statut de raccrochage
+                                    </th>
+                                    <th className="px-3 py-2">24H</th>
+                                    <th className="px-3 py-2">%</th>
+                                    <th className="px-3 py-2">6H</th>
+                                    <th className="px-3 py-2">%</th>
+                                    <th className="px-3 py-2">1H</th>
+                                    <th className="px-3 py-2">%</th>
+                                    <th className="px-3 py-2">15M</th>
+                                    <th className="px-3 py-2">%</th>
+                                    <th className="px-3 py-2">1M</th>
+                                    <th className="px-3 py-2">%</th>
+                                  </tr>
+                                </thead>
+
+                                <tbody>
+                                  {dashboardData.carrierStats.map((row, index) => (
+                                    <tr
+                                      key={row[0]}
+                                      className={index % 2 === 0 ? "bg-white/[0.02]" : "bg-transparent"}
                                     >
-                                      {cell}
-                                    </td>
+                                      {row.map((cell, i) => (
+                                        <td
+                                          key={`${row[0]}-${i}`}
+                                          className={`px-3 py-2 ${
+                                            i === 0
+                                              ? "font-semibold text-slate-200"
+                                              : "font-mono text-slate-400"
+                                          }`}
+                                        >
+                                          {cell}
+                                        </td>
+                                      ))}
+                                    </tr>
                                   ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
+                                </tbody>
+                              </table>
+                            </div>
+                          </>
+                        )}
                       </div>
                     </div>
                   </section>
 
-                  <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6">
-                    {dashboardData.topStats.map((stat, index) => {
-                      const Icon = statIcons[stat.label] || PhoneCall;
-
-                      return (
-                        <motion.div
-                          key={stat.label}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: index * 0.03 }}
-                          className={`rounded-[24px] border bg-gradient-to-br p-4 shadow-2xl ${toneClasses(
-                            stat.tone
-                          )}`}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="max-w-[150px] text-[11px] uppercase tracking-[0.18em] text-slate-300">
-                                {stat.label}
-                              </div>
-                              <div className="mt-3 font-mono text-4xl leading-none text-white">
-                                {stat.value}
-                              </div>
-                            </div>
-
-                            <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                              <Icon className="h-5 w-5 text-white" />
-                            </div>
-                          </div>
-                        </motion.div>
-                      );
-                    })}
+                  <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    <DashboardKpiCard
+                      label="Agents connectés"
+                      value={chartsData.headline.agentsLogged}
+                    />
+                    <DashboardKpiCard
+                      label="Appels actifs"
+                      value={chartsData.headline.totalCalls}
+                    />
+                    <DashboardKpiCard
+                      label="Appels en sonnerie"
+                      value={chartsData.headline.callsRinging}
+                    />
+                    <DashboardKpiCard
+                      label="Dropped %"
+                      value={`${chartsData.headline.totalDropped}%`}
+                    />
                   </section>
+
 
                   <section className="grid gap-5 xl:grid-cols-[1.5fr_0.9fr]">
                     <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
@@ -722,32 +1064,8 @@ export default function ActivityDisplay() {
                           {reportTitle}
                         </h1>
                         <p className="mt-1 text-sm text-slate-400">
-                          Vue analytique pour faire ressortir les tendances journalières et hebdomadaires invisibles dans les tables live.
+                          Vue analytique en direct basée sur les données live actuellement récupérées depuis VICIdial.
                         </p>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setHistoryRange("daily")}
-                          className={`rounded-full px-4 py-2 text-xs uppercase tracking-[0.18em] transition ${
-                            historyRange === "daily"
-                              ? "border border-cyan-400/40 bg-cyan-400/10 text-cyan-200"
-                              : "border border-cyan-500/15 bg-cyan-500/5 text-slate-400 hover:text-slate-100"
-                          }`}
-                        >
-                          Daily
-                        </button>
-
-                        <button
-                          onClick={() => setHistoryRange("weekly")}
-                          className={`rounded-full px-4 py-2 text-xs uppercase tracking-[0.18em] transition ${
-                            historyRange === "weekly"
-                              ? "border border-cyan-400/40 bg-cyan-400/10 text-cyan-200"
-                              : "border border-cyan-500/15 bg-cyan-500/5 text-slate-400 hover:text-slate-100"
-                          }`}
-                        >
-                          Weekly
-                        </button>
                       </div>
                     </div>
 
@@ -758,24 +1076,24 @@ export default function ActivityDisplay() {
 
                   <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                     <DashboardKpiCard
-                      label={historyRange === "daily" ? "Total appels 7 jours" : "Total appels 6 semaines"}
-                      value={chartsData.headline.totalCalls.toLocaleString("fr-FR")}
+                      label="Agents connectés"
+                      value={chartsData.headline.agentsLogged}
                     />
                     <DashboardKpiCard
-                      label="Taux de réponse moyen"
-                      value={`${chartsData.headline.avgAnswerRate}%`}
+                      label="Appels actifs"
+                      value={chartsData.headline.totalCalls}
                     />
                     <DashboardKpiCard
-                      label="Temps d'attente moyen"
-                      value={`${chartsData.headline.avgWait}s`}
+                      label="Appels en sonnerie"
+                      value={chartsData.headline.callsRinging}
                     />
                     <DashboardKpiCard
-                      label="Total appels abandonnés"
-                      value={chartsData.headline.totalDropped.toLocaleString("fr-FR")}
+                      label="Dropped %"
+                      value={`${chartsData.headline.totalDropped}%`}
                     />
                   </section>
 
-                  <section className="grid gap-5 xl:grid-cols-2">
+                  <section className="grid gap-4 xl:grid-cols-2">
                     <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
                       <div className="mb-4 flex items-center gap-2">
                         <TrendingUp className="h-5 w-5 text-cyan-300" />
@@ -784,11 +1102,11 @@ export default function ActivityDisplay() {
                         </h2>
                       </div>
 
-                      <div className="h-[320px]">
+                      <div className="h-[280px]">
                         <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={chartsData.callVolumeTrend}>
+                          <BarChart data={chartsData.topStatsChart}>
                             <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
-                            <XAxis dataKey="label" stroke="#94a3b8" />
+                            <XAxis dataKey="name" stroke="#94a3b8" />
                             <YAxis stroke="#94a3b8" />
                             <Tooltip
                               contentStyle={{
@@ -799,9 +1117,7 @@ export default function ActivityDisplay() {
                               }}
                             />
                             <Legend />
-                            <Bar dataKey="totalCalls" name="Total appels" fill="#22d3ee" radius={[8, 8, 0, 0]} />
-                            <Bar dataKey="answered" name="Répondus" fill="#10b981" radius={[8, 8, 0, 0]} />
-                            <Bar dataKey="busy" name="Busy" fill="#6366f1" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="value" name="Valeur" fill="#22d3ee" radius={[8, 8, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                       </div>
@@ -815,63 +1131,9 @@ export default function ActivityDisplay() {
                         </h2>
                       </div>
 
-                      <div className="h-[320px]">
+                      <div className="h-[280px]">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={chartsData.serviceTrend}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
-                            <XAxis dataKey="label" stroke="#94a3b8" />
-                            <YAxis stroke="#94a3b8" />
-                            <Tooltip
-                              contentStyle={{
-                                background: "#020617",
-                                border: "1px solid rgba(34,211,238,0.25)",
-                                borderRadius: "16px",
-                                color: "#e2e8f0",
-                              }}
-                            />
-                            <Legend />
-                            <Line
-                              type="monotone"
-                              dataKey="answerRate"
-                              name="Taux réponse %"
-                              stroke="#22d3ee"
-                              strokeWidth={3}
-                              dot={false}
-                            />
-                            <Line
-                              type="monotone"
-                              dataKey="dropRate"
-                              name="Taux abandon %"
-                              stroke="#f59e0b"
-                              strokeWidth={3}
-                              dot={false}
-                            />
-                            <Line
-                              type="monotone"
-                              dataKey="avgWait"
-                              name="Attente moyenne s"
-                              stroke="#a855f7"
-                              strokeWidth={3}
-                              dot={false}
-                            />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
-                      <div className="mb-4 flex items-center gap-2">
-                        <RadioTower className="h-5 w-5 text-cyan-300" />
-                        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
-                          Comparatif campagnes
-                        </h2>
-                      </div>
-
-                      <div className="h-[320px]">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={chartsData.campaignComparison}>
+                          <BarChart data={chartsData.serviceLevelData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
                             <XAxis dataKey="name" stroke="#94a3b8" />
                             <YAxis stroke="#94a3b8" />
@@ -884,8 +1146,39 @@ export default function ActivityDisplay() {
                               }}
                             />
                             <Legend />
-                            <Bar dataKey="calls" name="Appels" fill="#38bdf8" radius={[8, 8, 0, 0]} />
-                            <Bar dataKey="avgWait" name="Attente moyenne" fill="#f59e0b" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="value" name="Mesure" fill="#38bdf8" radius={[8, 8, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="grid gap-4 xl:grid-cols-[1.45fr_1fr]">
+                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <div className="mb-4 flex items-center gap-2">
+                        <RadioTower className="h-5 w-5 text-cyan-300" />
+                        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+                          Comparative agents
+                        </h2>
+                      </div>
+
+                      <div className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={chartsData.agentCallsData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
+                            <XAxis dataKey="name" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Legend />
+                            <Bar dataKey="calls" name="Appels" fill="#22d3ee" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="latency" name="Latency" fill="#f59e0b" radius={[8, 8, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                       </div>
@@ -895,7 +1188,7 @@ export default function ActivityDisplay() {
                       <div className="mb-4 flex items-center gap-2">
                         <BarChart3 className="h-5 w-5 text-cyan-300" />
                         <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
-                          Répartition campagnes
+                          Répartition statuts d'appel
                         </h2>
                       </div>
 
@@ -903,14 +1196,14 @@ export default function ActivityDisplay() {
                         <ResponsiveContainer width="100%" height="100%">
                           <PieChart>
                             <Pie
-                              data={chartsData.campaignComparison}
-                              dataKey="calls"
+                              data={chartsData.carrierPieData}
+                              dataKey="value"
                               nameKey="name"
-                              innerRadius={70}
-                              outerRadius={110}
+                              innerRadius={55}
+                              outerRadius={105}
                               paddingAngle={3}
                             >
-                              {chartsData.campaignComparison.map((entry, index) => (
+                              {chartsData.carrierPieData.map((entry, index) => (
                                 <Cell key={entry.name} fill={chartPalette[index % chartPalette.length]} />
                               ))}
                             </Pie>
