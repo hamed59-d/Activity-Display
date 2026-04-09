@@ -1,5 +1,7 @@
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
+
 export async function fetchActivityDisplayData() {
-  const response = await fetch("http://localhost:3001/api/activity-display", {
+  const response = await fetch(`${API_BASE}/api/activity-display`, {
     cache: "no-store",
   });
 
