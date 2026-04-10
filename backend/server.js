@@ -4,7 +4,14 @@ import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios";
 import * as cheerio from "cheerio";
-import mysql from "mysql2/promise";
+//import mysql from "mysql2/promise";
+import {
+  initDatabase,
+  closeDatabase,
+  logCollectorEvent,
+  persistSnapshotToDb,
+  getRecordedHistory,
+} from "./db.js";
 
 dotenv.config();
 
@@ -17,14 +24,14 @@ const VICIDIAL_BASE_URL = (process.env.VICIDIAL_BASE_URL || "").replace(/\/+$/, 
 const VICIDIAL_USERNAME = process.env.VICIDIAL_USERNAME || "";
 const VICIDIAL_PASSWORD = process.env.VICIDIAL_PASSWORD || "";
 
-const DB_HOST = process.env.DB_HOST || "127.0.0.1";
+/*const DB_HOST = process.env.DB_HOST || "127.0.0.1";
 const DB_PORT = Number(process.env.DB_PORT || 3306);
 const DB_USER = process.env.DB_USER || "root";
 const DB_PASSWORD = process.env.DB_PASSWORD || "";
-const DB_NAME = process.env.DB_NAME || "vicidial";
+const DB_NAME = process.env.DB_NAME || "vicidial";*/
 const RECORD_SNAPSHOT_INTERVAL_MS = Number(process.env.RECORD_SNAPSHOT_INTERVAL_MS || 60000);
 
-let dbPool = null;
+//let dbPool = null;
 let collectorTimer = null;
 let shutdownInProgress = false;
 
@@ -616,7 +623,7 @@ async function fetchVicidialHtml() {
   }
 }
 
-async function initDatabase() {
+/*async function initDatabase() {
   dbPool = mysql.createPool({
     host: DB_HOST,
     port: DB_PORT,
@@ -809,7 +816,7 @@ async function getRecordedHistory(mode, startDate, endDate) {
   }));
 
   return aggregateHistory(mode, startDate, endDate, history);
-}
+}*/
 
 async function collectAndPersistSnapshot(captureReason = "interval") {
   const html = await fetchVicidialHtml();
@@ -852,8 +859,12 @@ async function shutdown(signal) {
     } catch {}
   }
 
-  try {
+  /*try {
     if (dbPool) await dbPool.end();
+  } catch {}*/
+
+  try {
+    await closeDatabase();
   } catch {}
 
   process.exit(0);
@@ -949,13 +960,24 @@ async function bootstrap() {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-bootstrap().catch(async (error) => {
+/*bootstrap().catch(async (error) => {
   console.error("Bootstrap failed:", error.message);
   try {
     if (dbPool) {
       await logCollectorEvent("error", `Bootstrap failed: ${error.message}`);
       await dbPool.end();
     }
+  } catch {}
+  process.exit(1);
+});*/
+
+bootstrap().catch(async (error) => {
+  console.error("Bootstrap failed:", error.message);
+  try {
+    await logCollectorEvent("error", `Bootstrap failed: ${error.message}`);
+  } catch {}
+  try {
+    await closeDatabase();
   } catch {}
   process.exit(1);
 });
