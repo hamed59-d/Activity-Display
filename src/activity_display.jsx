@@ -298,15 +298,20 @@ export default function ActivityDisplay() {
   const isDashboardsView = activeReportLink === "dashboards";
 
 
-  const [graphMode, setGraphMode] = useState("Min");
-  const [graphStart, setGraphStart] = useState(() => {
-    const d = new Date(Date.now() - 60 * 60 * 1000);
-    return d.toISOString().slice(0, 16);
-  });
-  const [graphEnd, setGraphEnd] = useState(() => new Date().toISOString().slice(0, 16));
-  const [historyData, setHistoryData] = useState([]);
+    const [graphMode, setGraphMode] = useState("Min");
+    const [graphStart, setGraphStart] = useState(() => {
+      const d = new Date(Date.now() - 60 * 60 * 1000);
+      return d.toISOString().slice(0, 16);
+    });
+    const [graphEnd, setGraphEnd] = useState(() => new Date().toISOString().slice(0, 16));
+    const [historyData, setHistoryData] = useState([]);
+    const [agentAnalytics, setAgentAnalytics] = useState({
+      agents: [],
+      statusDistribution: [],
+      topPauseCodes: [],
+    });
 
-  const [dataSource, setDataSource] = useState("realtime");
+    const [dataSource, setDataSource] = useState("realtime");
 
 
   useEffect(() => {
@@ -370,6 +375,57 @@ export default function ActivityDisplay() {
       clearInterval(id);
     };
   }, [activeReportLink, graphMode, graphStart, graphEnd, dataSource, dashboardData?.updatedAt]);
+
+
+  useEffect(() => {
+    const needsAgentAnalytics =
+      activeReportLink === "live-board" || activeReportLink === "dashboards";
+
+    if (!needsAgentAnalytics) return;
+
+    let cancelled = false;
+
+    const loadAgentAnalytics = async () => {
+      try {
+        const url = new URL("http://localhost:3001/api/activity-display/agent-analytics");
+        url.searchParams.set("start", graphStart);
+        url.searchParams.set("end", graphEnd);
+
+        const response = await fetch(url.toString(), { cache: "no-store" });
+
+        if (!response.ok) {
+          throw new Error(`Agent analytics backend error: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (!cancelled) {
+          setAgentAnalytics({
+            agents: result.agents || [],
+            statusDistribution: result.statusDistribution || [],
+            topPauseCodes: result.topPauseCodes || [],
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error(err);
+          setAgentAnalytics({
+            agents: [],
+            statusDistribution: [],
+            topPauseCodes: [],
+          });
+        }
+      }
+    };
+
+    loadAgentAnalytics();
+    const id = setInterval(loadAgentAnalytics, 15000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [activeReportLink, graphStart, graphEnd]);
 
 
   useEffect(() => {
@@ -514,7 +570,7 @@ export default function ActivityDisplay() {
         { name: "Avg CustTime", value: avgCustTime },
       ];
 
-      const currentGraphsAgents = (dashboardData.agentRows || []).map((row) => {
+            const currentGraphsAgents = (dashboardData.agentRows || []).map((row) => {
         const pauseSeconds = toSeconds(row.pause);
         const loginSeconds = toSeconds(row.mmss);
 
@@ -630,12 +686,45 @@ export default function ActivityDisplay() {
               key: "busyRate",
               title: "Busy",
               value: historyLast.busyRate,
-              delta: formatDelta(Number((historyLast.busyRate - historyFirst.busyRate).toFixed(2)), "%"),
+              delta: formatDelta(
+                Number((historyLast.busyRate - historyFirst.busyRate).toFixed(2)),
+                "%"
+              ),
               suffix: "%",
               dataKey: "busyRate",
             },
           ]
         : [];
+
+      const analyticsAgents = agentAnalytics?.agents || [];
+
+      const utilizationByAgentData = [...analyticsAgents]
+        .sort((a, b) => b.utilizationPct - a.utilizationPct)
+        .slice(0, 8)
+        .map((item) => ({
+          name: item.agentUser?.length > 12 ? `${item.agentUser.slice(0, 12)}…` : item.agentUser,
+          fullName: item.agentUser,
+          utilizationPct: item.utilizationPct || 0,
+          pausePct: item.pausePct || 0,
+        }));
+
+      const handledByAgentData = [...analyticsAgents]
+        .sort((a, b) => b.callsHandled - a.callsHandled)
+        .slice(0, 8)
+        .map((item) => ({
+          name: item.agentUser?.length > 12 ? `${item.agentUser.slice(0, 12)}…` : item.agentUser,
+          fullName: item.agentUser,
+          callsHandled: item.callsHandled || 0,
+          avgLatencyMs: item.avgLatencyMs || 0,
+        }));
+
+      const statusDistributionData = agentAnalytics?.statusDistribution || [];
+
+      const topPauseCodesData = (agentAnalytics?.topPauseCodes || []).map((item) => ({
+        name: item.pauseCode?.length > 12 ? `${item.pauseCode.slice(0, 12)}…` : item.pauseCode,
+        fullName: item.pauseCode,
+        value: item.hits || 0,
+      }));
 
       const headline = {
         totalCalls: normalizedTopStatsMap["Current Active Calls"] || 0,
@@ -662,9 +751,13 @@ export default function ActivityDisplay() {
         deltaCards,
         agentStateAreaData,
         serviceMiniCards,
+        utilizationByAgentData,
+        handledByAgentData,
+        statusDistributionData,
+        topPauseCodesData,
         headline,
       };
-      }, [dashboardData, historyData]);
+      }, [dashboardData, historyData, agentAnalytics]);
 
 
 
@@ -699,7 +792,7 @@ export default function ActivityDisplay() {
               <div className="hidden h-8 w-px bg-cyan-500/20 md:block" />
 
               <div className="hidden font-mono text-[11px] uppercase tracking-[0.25em] text-slate-400 md:block">
-                Coque de tableau de bord inspirée de Nexus pour les surfaces de rapport
+                inspirée de Nexus pour les surfaces de rapport
               </div>
             </div>
 
@@ -967,7 +1060,7 @@ export default function ActivityDisplay() {
                       <div className="mb-4 flex items-center gap-2">
                         <PhoneCall className="h-5 w-5 text-cyan-300" />
                         <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
-                          Nombre d'appels passés par agent
+                          
                         </h2>
                       </div>
 
@@ -1009,7 +1102,7 @@ export default function ActivityDisplay() {
                       <div className="mb-4 flex items-center gap-2">
                         <Clock3 className="h-5 w-5 text-cyan-300" />
                         <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
-                          Évolution temporelle // intervalle sélectionné
+                          
                         </h2>
                       </div>
 
@@ -1069,7 +1162,7 @@ export default function ActivityDisplay() {
                           <div className="mb-4 flex items-center gap-2">
                             <Users className="h-5 w-5 text-cyan-300" />
                             <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
-                              Répartition des états agents // période
+                              
                             </h2>
                           </div>
 
@@ -1219,6 +1312,135 @@ export default function ActivityDisplay() {
                             <Line type="monotone" dataKey="avgWait" name="Attente moyenne" stroke="#f59e0b" strokeWidth={2} dot={false} />
                             <Line type="monotone" dataKey="avgCustTime" name="CustTime moyen" stroke="#10b981" strokeWidth={2} dot={false} />
                           </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                                    </section>
+
+                  <section className="grid gap-5 xl:grid-cols-2">
+                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <ChartHeader
+                        icon={TrendingUp}
+                        title="Utilisation et pause par agent // période"
+                        printTargetId="print-utilisation-pause"
+                        printTitle="Utilisation et pause par agent"
+                      />
+
+                      <div id="print-utilisation-pause" className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={chartsData.utilizationByAgentData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
+                            <XAxis dataKey="name" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Legend />
+                            <Bar dataKey="utilizationPct" name="Utilisation %" fill="#22d3ee" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="pausePct" name="Pause %" fill="#f59e0b" radius={[8, 8, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <ChartHeader
+                        icon={Users}
+                        title="Répartition des statuts // période"
+                        printTargetId="print-status-distribution"
+                        printTitle="Répartition des statuts"
+                      />
+
+                      <div id="print-status-distribution" className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={chartsData.statusDistributionData}
+                              dataKey="value"
+                              nameKey="name"
+                              innerRadius={55}
+                              outerRadius={105}
+                              paddingAngle={3}
+                            >
+                              {chartsData.statusDistributionData.map((entry, index) => (
+                                <Cell key={`${entry.name}-${index}`} fill={chartPalette[index % chartPalette.length]} />
+                              ))}
+                            </Pie>
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Legend />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="grid gap-5 xl:grid-cols-2">
+                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <ChartHeader
+                        icon={PhoneCall}
+                        title="Appels traités par agent // période"
+                        printTargetId="print-handled-calls"
+                        printTitle="Appels traités par agent"
+                      />
+
+                      <div id="print-handled-calls" className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={chartsData.handledByAgentData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
+                            <XAxis dataKey="name" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Legend />
+                            <Bar dataKey="callsHandled" name="Appels traités" fill="#22d3ee" radius={[8, 8, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <ChartHeader
+                        icon={ShieldCheck}
+                        title="Codes pause dominants // période"
+                        printTargetId="print-pause-codes"
+                        printTitle="Codes pause dominants"
+                      />
+
+                      <div id="print-pause-codes" className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={chartsData.topPauseCodesData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" />
+                            <XAxis dataKey="name" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Legend />
+                            <Bar dataKey="value" name="Occurrences" fill="#f59e0b" radius={[8, 8, 0, 0]} />
+                          </BarChart>
                         </ResponsiveContainer>
                       </div>
                     </div>

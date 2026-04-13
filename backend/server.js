@@ -11,6 +11,7 @@ import {
   logCollectorEvent,
   persistSnapshotToDb,
   getRecordedHistory,
+  getRecordedAgentAnalytics,
 } from "./db.js";
 
 dotenv.config();
@@ -920,6 +921,30 @@ app.get("/api/activity-display/history", async (_req, res) => {
     });
   }
 });
+
+app.get("/api/activity-display/agent-analytics", async (_req, res) => {
+  try {
+    const endDate = toDateSafe(_req.query.end) || new Date();
+    const startDate =
+      toDateSafe(_req.query.start) ||
+      new Date(endDate.getTime() - 60 * 60 * 1000);
+
+    const payload = await getRecordedAgentAnalytics(startDate, endDate);
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      start: startDate.toISOString(),
+      end: endDate.toISOString(),
+      ...payload,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: "Failed to build agent analytics",
+      details: error.message,
+    });
+  }
+});
+
 
 app.get("/api/activity-display/raw", async (_req, res) => {
   try {

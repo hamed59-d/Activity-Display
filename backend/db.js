@@ -585,3 +585,141 @@ export async function getRecordedHistory(mode, startDate, endDate) {
 
   return aggregateHistory(mode, startDate, endDate, history);
 }
+
+export async function getRecordedAgentAnalytics(startDate, endDate) {
+  ensureDb();
+
+  const start = toQueryDateTime(startDate);
+  const end = toQueryDateTime(endDate);
+
+  const normalizedStatusExpr = `
+    CASE
+      WHEN UPPER(COALESCE(a.status, '')) IN ('READY', 'INCALL', 'PAUSED', 'DISPO', 'DEAD')
+        THEN UPPER(a.status)
+      WHEN UPPER(COALESCE(a.session_id, '')) IN ('READY', 'INCALL', 'PAUSED', 'DISPO', 'DEAD')
+        THEN UPPER(a.session_id)
+      ELSE ''
+    END
+  `;
+
+  const normalizedPauseCodeExpr = `
+    CASE
+      WHEN ${normalizedStatusExpr} = 'PAUSED' THEN
+        COALESCE(
+          NULLIF(TRIM(a.pause_code), ''),
+          CASE
+            WHEN UPPER(COALESCE(a.status, '')) NOT IN ('READY', 'INCALL', 'PAUSED', 'DISPO', 'DEAD')
+              THEN NULLIF(TRIM(a.status), '')
+            ELSE NULL
+          END,
+          NULLIF(TRIM(a.login_label), ''),
+          '(sans code)'
+        )
+      ELSE NULL
+    END
+  `;
+
+  const agentRows = db.prepare(`
+    SELECT
+      a.agent_user,
+      COALESCE(NULLIF(MAX(TRIM(a.campaign)), ''), '(sans campagne)') AS campaign,
+      COUNT(*) AS samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'INCALL' THEN 1 ELSE 0 END) AS incall_samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'PAUSED' THEN 1 ELSE 0 END) AS paused_samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'READY' THEN 1 ELSE 0 END) AS ready_samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'DISPO' THEN 1 ELSE 0 END) AS dispo_samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'DEAD' THEN 1 ELSE 0 END) AS dead_samples,
+      AVG(COALESCE(a.latency_ms, 0)) AS avg_latency_ms,
+      MIN(COALESCE(a.calls, 0)) AS min_calls,
+      MAX(COALESCE(a.calls, 0)) AS max_calls
+    FROM agent_snapshots a
+    JOIN metric_snapshots m
+      ON m.id = a.snapshot_id
+    WHERE m.captured_at BETWEEN ? AND ?
+      AND TRIM(COALESCE(a.agent_user, '')) <> ''
+    GROUP BY a.agent_user
+    ORDER BY max_calls DESC, a.agent_user ASC
+  `).all(start, end);
+
+  const agents = agentRows.map((row) => {
+    const samples = toInt(row.samples, 0);
+    const incallSamples = toInt(row.incall_samples, 0);
+    const pausedSamples = toInt(row.paused_samples, 0);
+    const readySamples = toInt(row.ready_samples, 0);
+    const dispoSamples = toInt(row.dispo_samples, 0);
+    const deadSamples = toInt(row.dead_samples, 0);
+    const minCalls = toInt(row.min_calls, 0);
+    const maxCalls = toInt(row.max_calls, 0);
+
+    const ratio = (value) =>
+      samples > 0 ? Number(((value / samples) * 100).toFixed(2)) : 0;
+
+    return {
+      agentUser: row.agent_user || "(agent inconnu)",
+      campaign: row.campaign || "(sans campagne)",
+      samples,
+      incallSamples,
+      pausedSamples,
+      readySamples,
+      dispoSamples,
+      deadSamples,
+      utilizationPct: ratio(incallSamples),
+      pausePct: ratio(pausedSamples),
+      readyPct: ratio(readySamples),
+      dispoPct: ratio(dispoSamples),
+      deadPct: ratio(deadSamples),
+      avgLatencyMs: Number(toFloat(row.avg_latency_ms, 0).toFixed(2)),
+      callsHandled: Math.max(0, maxCalls - minCalls),
+      maxCalls,
+    };
+  });
+
+  const pauseCodeRows = db.prepare(`
+    SELECT
+      ${normalizedPauseCodeExpr} AS pause_code,
+      COUNT(*) AS hits
+    FROM agent_snapshots a
+    JOIN metric_snapshots m
+      ON m.id = a.snapshot_id
+    WHERE m.captured_at BETWEEN ? AND ?
+      AND ${normalizedStatusExpr} = 'PAUSED'
+    GROUP BY pause_code
+    ORDER BY hits DESC, pause_code ASC
+    LIMIT 8
+  `).all(start, end);
+
+  const topPauseCodes = pauseCodeRows
+    .map((row) => ({
+      pauseCode: row.pause_code,
+      hits: toInt(row.hits, 0),
+    }))
+    .filter((row) => row.pauseCode && row.hits > 0);
+
+  const statusTotals = db.prepare(`
+    SELECT
+      COUNT(*) AS total_samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'INCALL' THEN 1 ELSE 0 END) AS incall_samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'PAUSED' THEN 1 ELSE 0 END) AS paused_samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'READY' THEN 1 ELSE 0 END) AS ready_samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'DISPO' THEN 1 ELSE 0 END) AS dispo_samples,
+      SUM(CASE WHEN ${normalizedStatusExpr} = 'DEAD' THEN 1 ELSE 0 END) AS dead_samples
+    FROM agent_snapshots a
+    JOIN metric_snapshots m
+      ON m.id = a.snapshot_id
+    WHERE m.captured_at BETWEEN ? AND ?
+  `).get(start, end);
+
+  const statusDistribution = [
+    { name: "En appel", value: toInt(statusTotals?.incall_samples, 0) },
+    { name: "En pause", value: toInt(statusTotals?.paused_samples, 0) },
+    { name: "Ready", value: toInt(statusTotals?.ready_samples, 0) },
+    { name: "Dispo", value: toInt(statusTotals?.dispo_samples, 0) },
+    { name: "Dead", value: toInt(statusTotals?.dead_samples, 0) },
+  ].filter((item) => item.value > 0);
+
+  return {
+    agents,
+    topPauseCodes,
+    statusDistribution,
+  };
+}
