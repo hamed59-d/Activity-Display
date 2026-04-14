@@ -586,6 +586,135 @@ export async function getRecordedHistory(mode, startDate, endDate) {
   return aggregateHistory(mode, startDate, endDate, history);
 }
 
+export async function getRecordedAgentCallsAtHour(targetDate) {
+  ensureDb();
+
+  const base = new Date(targetDate);
+  if (Number.isNaN(base.getTime())) {
+    return {
+      capturedAt: null,
+      hourStart: null,
+      hourEnd: null,
+      agents: [],
+    };
+  }
+
+  const hourStart = new Date(base);
+  hourStart.setMinutes(0, 0, 0);
+
+  const hourEnd = new Date(hourStart);
+  hourEnd.setHours(hourEnd.getHours() + 1);
+
+  const rows = db.prepare(`
+    SELECT
+      m.captured_at,
+      a.agent_user,
+      a.status,
+      a.calls
+    FROM agent_snapshots a
+    JOIN metric_snapshots m ON m.id = a.snapshot_id
+    WHERE m.captured_at >= ?
+      AND m.captured_at < ?
+    ORDER BY m.captured_at ASC, LOWER(COALESCE(a.agent_user, '')) ASC, a.id ASC
+  `).all(
+    toQueryDateTime(hourStart),
+    toQueryDateTime(hourEnd)
+  );
+
+  const byAgent = new Map();
+
+  for (const row of rows) {
+    const agentUser = (row.agent_user || "").trim() || "(sans agent)";
+    const status = String(row.status || "").trim().toUpperCase();
+    const activeCalls = status === "INCALL" ? 1 : 0;
+
+    if (!byAgent.has(agentUser)) {
+      byAgent.set(agentUser, {
+        agentUser,
+        samples: 0,
+        totalActiveCalls: 0,
+        maxActiveCalls: 0,
+      });
+    }
+
+    const entry = byAgent.get(agentUser);
+    entry.samples += 1;
+    entry.totalActiveCalls += activeCalls;
+    entry.maxActiveCalls = Math.max(entry.maxActiveCalls, activeCalls);
+  }
+
+  const agents = [...byAgent.values()]
+    .map((entry) => ({
+      agentUser: entry.agentUser,
+      avgActiveCalls:
+        entry.samples > 0
+          ? Number((entry.totalActiveCalls / entry.samples).toFixed(2))
+          : 0,
+      maxActiveCalls: entry.maxActiveCalls,
+      samples: entry.samples,
+    }))
+    .sort((a, b) => a.agentUser.localeCompare(b.agentUser));
+
+  return {
+    capturedAt: toQueryDateTime(hourStart),
+    hourStart: toQueryDateTime(hourStart),
+    hourEnd: toQueryDateTime(hourEnd),
+    agents,
+  };
+}
+
+export async function getRecordedPauseHistory(mode, startDate, endDate, normalizePause) {
+  ensureDb();
+
+  const rows = db.prepare(`
+    SELECT
+      m.captured_at,
+      a.pause_code,
+      a.status,
+      a.login_label
+    FROM agent_snapshots a
+    JOIN metric_snapshots m ON m.id = a.snapshot_id
+    WHERE m.captured_at BETWEEN ? AND ?
+    ORDER BY m.captured_at ASC, a.id ASC
+  `).all(
+    toQueryDateTime(startDate),
+    toQueryDateTime(endDate)
+  );
+
+  const buckets = new Map();
+
+  for (const row of rows) {
+    const date = new Date(row.captured_at);
+    if (Number.isNaN(date.getTime())) continue;
+
+    const key = getBucketKey(date, mode);
+
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        label: key,
+        brief: 0,
+        dejeuner: 0,
+        toilette: 0,
+      });
+    }
+
+    const bucket = buckets.get(key);
+
+    const rawPause =
+      row.pause_code ||
+      (String(row.status || "").toUpperCase() === "PAUSED" ? row.login_label || "" : "") ||
+      row.login_label ||
+      "";
+
+    const normalized = normalizePause(rawPause);
+    if (!normalized) continue;
+
+    bucket[normalized] += 1;
+  }
+
+  return [...buckets.values()];
+}
+
 export async function getRecordedAgentAnalytics(startDate, endDate) {
   ensureDb();
 

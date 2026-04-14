@@ -99,9 +99,6 @@ const topStatLabelsFr = {
 
 const sidebarItems = [
   { key: "reports", label: "Rapports", icon: BarChart3 },
-  { key: "campaigns", label: "Campagnes", icon: RadioTower },
-  { key: "agents", label: "Agents", icon: Users },
-  { key: "calls", label: "Appels", icon: PhoneCall },
 ];
 
 function toneClasses(tone) {
@@ -197,6 +194,117 @@ function TinyTrendCard({ title, value, delta, suffix = "", dataKey, data }) {
         </ResponsiveContainer>
       </div>
     </div>
+  );
+}
+
+function ReportFiltersBar({
+  reportTitle,
+  description,
+  graphMode,
+  setGraphMode,
+  graphStart,
+  setGraphStart,
+  graphEnd,
+  setGraphEnd,
+  dataSource,
+  setDataSource,
+  showDateRange = true,
+  sourceOptions = [
+    { value: "realtime", label: "RealTime" },
+    { value: "record", label: "Record" },
+  ],
+}) {
+  return (
+    <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 shadow-[0_0_35px_rgba(34,211,238,0.06)] backdrop-blur-xl">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="font-mono text-lg uppercase tracking-[0.22em] text-cyan-200">
+            {reportTitle}
+          </h1>
+          <p className="mt-1 text-sm text-slate-400">{description}</p>
+        </div>
+      </div>
+
+      <div className={`mt-5 grid gap-3 ${showDateRange ? "md:grid-cols-4" : "md:grid-cols-2"}`}>
+        <div>
+          <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+            Mode
+          </label>
+          <select
+            value={graphMode}
+            onChange={(e) => setGraphMode(e.target.value)}
+            className="w-full rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+          >
+            {["Sec", "Min", "HH", "DD", "W", "MM", "YYYY"].map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {showDateRange && (
+          <>
+            <div>
+              <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                Start date
+              </label>
+              <input
+                type="datetime-local"
+                value={graphStart}
+                onChange={(e) => setGraphStart(e.target.value)}
+                className="w-full rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                End date
+              </label>
+              <input
+                type="datetime-local"
+                value={graphEnd}
+                onChange={(e) => setGraphEnd(e.target.value)}
+                className="w-full rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+              />
+            </div>
+          </>
+        )}
+
+        <div>
+          <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+            Data source
+          </label>
+          <select
+            value={dataSource}
+            onChange={(e) => setDataSource(e.target.value)}
+            className="w-full rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+          >
+            {sourceOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TopKpiStrip({ cards }) {
+  return (
+    <section className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+      {cards.map((card) => (
+        <DashboardKpiCard
+          key={card.key}
+          label={card.label}
+          value={card.value}
+          hint={card.hint}
+          icon={card.icon}
+        />
+      ))}
+    </section>
   );
 }
 
@@ -310,6 +418,26 @@ export default function ActivityDisplay() {
       statusDistribution: [],
       topPauseCodes: [],
     });
+    const [pauseHistory, setPauseHistory] = useState({
+      brief: [],
+      dejeuner: [],
+      toilette: [],
+    });
+
+    const [rdvAnalytics, setRdvAnalytics] = useState({
+      cards: [],
+      timeline: [],
+      byTelepro: [],
+      byProduct: [],
+      byHeating: [],
+    });
+
+    const [agentCallsViewMode, setAgentCallsViewMode] = useState("realtime");
+    const [agentCallsAt, setAgentCallsAt] = useState(() => new Date().toISOString().slice(0, 16));
+    const [agentCallsTable, setAgentCallsTable] = useState({
+      capturedAt: null,
+      agents: [],
+    });
 
     const [dataSource, setDataSource] = useState("realtime");
 
@@ -334,8 +462,12 @@ export default function ActivityDisplay() {
 
 
   useEffect(() => {
-    const needsHistory =
-      activeReportLink === "live-board" || activeReportLink === "dashboards";
+    const needsHistory = [
+        "live-board",
+        "dashboards",
+        "pauses",
+        "calls-volume",
+      ].includes(activeReportLink);
 
     if (!needsHistory) return;
 
@@ -378,8 +510,11 @@ export default function ActivityDisplay() {
 
 
   useEffect(() => {
-    const needsAgentAnalytics =
-      activeReportLink === "live-board" || activeReportLink === "dashboards";
+    const needsAgentAnalytics = [
+      "live-board",
+      "dashboards",
+      "pauses",
+    ].includes(activeReportLink);
 
     if (!needsAgentAnalytics) return;
 
@@ -429,6 +564,55 @@ export default function ActivityDisplay() {
 
 
   useEffect(() => {
+      if (activeReportLink !== "rdv") return;
+
+      let cancelled = false;
+
+      const loadRdvAnalytics = async () => {
+        try {
+          const url = new URL("http://localhost:3001/api/activity-display/rdv-analytics");
+          url.searchParams.set("mode", graphMode);
+          url.searchParams.set("start", graphStart);
+          url.searchParams.set("end", graphEnd);
+
+          const response = await fetch(url.toString(), { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`RDV backend error: ${response.status}`);
+          }
+
+          const result = await response.json();
+
+          if (!cancelled) {
+            setRdvAnalytics({
+              cards: result.cards || [],
+              timeline: result.timeline || [],
+              byTelepro: result.byTelepro || [],
+              byProduct: result.byProduct || [],
+              byHeating: result.byHeating || [],
+            });
+          }
+        } catch (err) {
+          if (!cancelled) {
+            console.error(err);
+            setRdvAnalytics({
+              cards: [],
+              timeline: [],
+              byTelepro: [],
+              byProduct: [],
+              byHeating: [],
+            });
+          }
+        }
+      };
+
+      loadRdvAnalytics();
+      return () => {
+        cancelled = true;
+      };
+    }, [activeReportLink, graphMode, graphStart, graphEnd]);
+
+
+  useEffect(() => {
     let mounted = true;
 
     const loadData = async (initialLoad = false) => {
@@ -465,13 +649,116 @@ export default function ActivityDisplay() {
     };
   }, [activeReportLink]);
 
+  useEffect(() => {
+    if (activeReportLink !== "pauses") return;
+
+    let cancelled = false;
+
+    const loadPauseHistory = async () => {
+      try {
+        const url = new URL("http://localhost:3001/api/activity-display/pause-history");
+        url.searchParams.set("mode", graphMode);
+        url.searchParams.set("start", graphStart);
+        url.searchParams.set("end", graphEnd);
+        url.searchParams.set("source", dataSource);
+
+        const response = await fetch(url.toString(), { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`Pause history backend error: ${response.status}`);
+        }
+
+        const result = await response.json();
+        const points = result.points || [];
+
+        if (!cancelled) {
+          setPauseHistory({
+            brief: points.map((p) => ({ label: p.label, value: p.brief || 0 })),
+            dejeuner: points.map((p) => ({ label: p.label, value: p.dejeuner || 0 })),
+            toilette: points.map((p) => ({ label: p.label, value: p.toilette || 0 })),
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error(err);
+          setPauseHistory({
+            brief: [],
+            dejeuner: [],
+            toilette: [],
+          });
+        }
+      }
+    };
+
+    loadPauseHistory();
+    const id = setInterval(loadPauseHistory, dataSource === "realtime" ? 5000 : 15000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [activeReportLink, graphMode, graphStart, graphEnd, dataSource]);
+
+  useEffect(() => {
+    if (activeReportLink !== "calls-volume") return;
+
+    let cancelled = false;
+
+    const loadAgentCallsTable = async () => {
+      try {
+        const url = new URL("http://localhost:3001/api/activity-display/agent-calls-at-time");
+        url.searchParams.set("mode", agentCallsViewMode);
+
+        if (agentCallsViewMode === "manual") {
+          url.searchParams.set("at", agentCallsAt);
+        }
+
+        const response = await fetch(url.toString(), { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`Agent calls backend error: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (!cancelled) {
+          setAgentCallsTable({
+            capturedAt: result.capturedAt || null,
+            agents: result.agents || [],
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error(err);
+          setAgentCallsTable({
+            capturedAt: null,
+            agents: [],
+          });
+        }
+      }
+    };
+
+    loadAgentCallsTable();
+
+    const id =
+      agentCallsViewMode === "realtime"
+        ? setInterval(loadAgentCallsTable, 5000)
+        : null;
+
+    return () => {
+      cancelled = true;
+      if (id) clearInterval(id);
+    };
+  }, [activeReportLink, agentCallsViewMode, agentCallsAt]);
+
   const reportTitle = useMemo(() => {
-    if (activeReportLink === "summary") return "Rapport principal en temps réel";
-    if (activeReportLink === "live-board") return "Rapport principal en temps réel // Graphes Courants";
-    if (activeReportLink === "agents-table") return "Rapport principal en temps réel // Temps d'appel des agents";
-    if (activeReportLink === "dashboards") return "Tableaux de bord // Analytique des rapports";
-    return `Rapport principal en temps réel // ${activeReportLink.replaceAll("-", " ")}`;
-  }, [activeReportLink]);
+      if (activeReportLink === "summary") return "Rapport principal en temps réel";
+      if (activeReportLink === "live-board") return "Rapport principal en temps réel // Graphes Standards";
+      if (activeReportLink === "pauses") return "Rapport principal en temps réel // Pauses";
+      if (activeReportLink === "calls-volume") return "Rapport principal en temps réel // Appels";
+      if (activeReportLink === "rdv") return "Rapport principal // RDV";
+      if (activeReportLink === "agents-table") return "Rapport principal en temps réel // Temps d'appel des agents";
+      if (activeReportLink === "dashboards") return "Tableaux de bord // Analytique des rapports";
+      return `Rapport principal en temps réel // ${activeReportLink.replaceAll("-", " ")}`;
+    }, [activeReportLink]);
 
   const chartsData = useMemo(() => {
       if (!dashboardData) return null;
@@ -760,6 +1047,10 @@ export default function ActivityDisplay() {
       }, [dashboardData, historyData, agentAnalytics]);
 
 
+  const totalCallsOnInterval = useMemo(() => {
+    return (historyData || []).reduce((sum, row) => sum + (Number(row.totalCalls) || 0), 0);
+  }, [historyData]);
+
 
   return (
     <div className="min-h-screen overflow-hidden bg-[#050912] text-slate-100">
@@ -873,7 +1164,40 @@ export default function ActivityDisplay() {
                       : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
                   }`}
                 >
-                  Graphes Courants
+                  Graphes Standards
+                </button>
+
+                <button
+                  onClick={() => setActiveReportLink("pauses")}
+                  className={`block w-full rounded-xl px-3 py-2 text-left ${
+                    activeReportLink === "pauses"
+                      ? "bg-cyan-400/10 text-cyan-200"
+                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
+                  }`}
+                >
+                  Pauses
+                </button>
+
+                <button
+                  onClick={() => setActiveReportLink("calls-volume")}
+                  className={`block w-full rounded-xl px-3 py-2 text-left ${
+                    activeReportLink === "calls-volume"
+                      ? "bg-cyan-400/10 text-cyan-200"
+                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
+                  }`}
+                >
+                  Appels
+                </button>
+
+                <button
+                  onClick={() => setActiveReportLink("rdv")}
+                  className={`block w-full rounded-xl px-3 py-2 text-left ${
+                    activeReportLink === "rdv"
+                      ? "bg-cyan-400/10 text-cyan-200"
+                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
+                  }`}
+                >
+                  RDV
                 </button>
 
                 <button
@@ -1063,6 +1387,8 @@ export default function ActivityDisplay() {
                           
                         </h2>
                       </div>
+
+                      
 
                       <div className="h-[320px]">
                         <ResponsiveContainer width="100%" height="100%">
@@ -1446,6 +1772,443 @@ export default function ActivityDisplay() {
                     </div>
                   </section>
 
+                </>
+              )}
+
+              {!loading && dashboardData && activeReportLink === "pauses" && chartsData && (
+  <>
+    <ReportFiltersBar
+      reportTitle={reportTitle}
+      description="Suivi temporel des pauses agents sur l'intervalle sélectionné."
+      graphMode={graphMode}
+      setGraphMode={setGraphMode}
+      graphStart={graphStart}
+      setGraphStart={setGraphStart}
+      graphEnd={graphEnd}
+      setGraphEnd={setGraphEnd}
+      dataSource={dataSource}
+      setDataSource={setDataSource}
+    />
+
+    <TopKpiStrip cards={chartsData.topStatsCards} />
+
+    <section className="space-y-5">
+      <div
+        id="pause-brief-chart"
+        className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
+      >
+        <ChartHeader icon={Clock3} title="Pause de Brief" printTargetId="pause-brief-chart" />
+        <div className="h-[320px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={pauseHistory.brief}>
+              <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+              <XAxis dataKey="label" stroke="#94a3b8" />
+              <YAxis stroke="#94a3b8" />
+              <Tooltip
+                contentStyle={{
+                  background: "#020617",
+                  border: "1px solid rgba(34,211,238,0.25)",
+                  borderRadius: "16px",
+                  color: "#e2e8f0",
+                }}
+              />
+              <Line type="monotone" dataKey="value" stroke="#22d3ee" strokeWidth={3} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div
+        id="pause-dejeuner-chart"
+        className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
+      >
+        <ChartHeader icon={Clock3} title="Pause de déjeuner" printTargetId="pause-dejeuner-chart" />
+        <div className="h-[320px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={pauseHistory.dejeuner}>
+              <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+              <XAxis dataKey="label" stroke="#94a3b8" />
+              <YAxis stroke="#94a3b8" />
+              <Tooltip
+                contentStyle={{
+                  background: "#020617",
+                  border: "1px solid rgba(34,211,238,0.25)",
+                  borderRadius: "16px",
+                  color: "#e2e8f0",
+                }}
+              />
+              <Line type="monotone" dataKey="value" stroke="#22d3ee" strokeWidth={3} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div
+        id="pause-toilette-chart"
+        className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
+      >
+        <ChartHeader icon={Clock3} title="Pause Toilette" printTargetId="pause-toilette-chart" />
+        <div className="h-[320px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={pauseHistory.toilette}>
+              <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+              <XAxis dataKey="label" stroke="#94a3b8" />
+              <YAxis stroke="#94a3b8" />
+              <Tooltip
+                contentStyle={{
+                  background: "#020617",
+                  border: "1px solid rgba(34,211,238,0.25)",
+                  borderRadius: "16px",
+                  color: "#e2e8f0",
+                }}
+              />
+              <Line type="monotone" dataKey="value" stroke="#22d3ee" strokeWidth={3} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </section>
+  </>
+              )}
+
+              {!loading && dashboardData && activeReportLink === "calls-volume" && chartsData && (
+                <>
+                  <ReportFiltersBar
+                    reportTitle={reportTitle}
+                    description="Volume d'appels sur l'intervalle sélectionné."
+                    graphMode={graphMode}
+                    setGraphMode={setGraphMode}
+                    graphStart={graphStart}
+                    setGraphStart={setGraphStart}
+                    graphEnd={graphEnd}
+                    setGraphEnd={setGraphEnd}
+                    dataSource={dataSource}
+                    setDataSource={setDataSource}
+                  />
+
+                  <TopKpiStrip cards={chartsData.topStatsCards} />
+
+                  <section
+                    id="calls-volume-chart"
+                    className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
+                  >
+                    <ChartHeader icon={PhoneCall} title="Nb d'appels" printTargetId="calls-volume-chart" />
+                    <div className="h-[360px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={historyData}>
+                          <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                          <XAxis dataKey="label" stroke="#94a3b8" />
+                          <YAxis stroke="#94a3b8" />
+                          <Tooltip
+                            contentStyle={{
+                              background: "#020617",
+                              border: "1px solid rgba(34,211,238,0.25)",
+                              borderRadius: "16px",
+                              color: "#e2e8f0",
+                            }}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="totalCalls"
+                            stroke="#22d3ee"
+                            fill="#22d3ee"
+                            fillOpacity={0.2}
+                            strokeWidth={3}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    <div className="mt-3 text-sm text-slate-400">
+                      Cumul des appels actifs observés sur l’intervalle sélectionné :{" "}
+                      <span className="font-mono text-cyan-200">{totalCallsOnInterval}</span>
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      Cette valeur est calculée à partir des relevés successifs et ne représente pas un nombre exact d’appels uniques commencés ou terminés.
+                    </div>
+                  </section>
+                  <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                    <ChartHeader
+                      icon={Users}
+                      title="Appels actives (Par Agent)"
+                      printTargetId="agent-active-calls-table"
+                    />
+
+                    <div className="mb-4 flex flex-wrap items-end gap-3">
+                      <div>
+                        <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                          Mode
+                        </label>
+                        <select
+                          value={agentCallsViewMode}
+                          onChange={(e) => setAgentCallsViewMode(e.target.value)}
+                          className="rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+                        >
+                          <option value="realtime">Real-Time</option>
+                          <option value="manual">Manual</option>
+                        </select>
+                      </div>
+
+                      {agentCallsViewMode === "manual" && (
+                        <div>
+                          <label className="mb-2 block font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                            Heure analysée
+                          </label>
+                          <input
+                            type="datetime-local"
+                            step="3600"
+                            value={agentCallsAt}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              if (!raw) {
+                                setAgentCallsAt(raw);
+                                return;
+                              }
+
+                              const [datePart, timePart = "00:00"] = raw.split("T");
+                              const [hour = "00"] = timePart.split(":");
+                              setAgentCallsAt(`${datePart}T${hour.padStart(2, "0")}:00`);
+                            }}
+                            className="rounded-2xl border border-cyan-500/20 bg-slate-950/70 px-4 py-3 text-slate-200 outline-none"
+                          />
+                        </div>
+                      )}
+
+                      <div className="min-w-[220px] text-sm text-slate-400">
+                        Relevé utilisé :{" "}
+                        <span className="font-mono text-cyan-200">
+                          {agentCallsTable.capturedAt || "—"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div id="agent-active-calls-table" className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-cyan-500/20 text-slate-400">
+                            <th className="px-3 py-2 text-left">Agent</th>
+                            <th className="px-3 py-2 text-right">
+                              {agentCallsViewMode === "manual" ? "Moyenne horaire" : "Appels actifs"}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(agentCallsTable.agents || []).map((agent, idx) => (
+                            <tr
+                              key={`${agent.agentUser || "agent"}-${idx}`}
+                              className="border-b border-white/5 text-slate-200"
+                            >
+                              <td className="px-3 py-2">{agent.agentUser || "-"}</td>
+                              <td className="px-3 py-2 text-right font-mono">
+                                {agentCallsViewMode === "manual"
+                                ? `${Math.round((agent.avgActiveCalls ?? 0) * 100)} %`
+                                : (agent.activeCalls ?? 0)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="mt-3 text-xs text-slate-500">
+                      En mode Real-Time, le tableau reflète l’état courant. En mode Manual, le tableau affiche la moyenne des appels actifs observés par agent sur l’heure sélectionnée.
+                    </div>
+                  </section>
+                </>
+              )}
+
+              {!loading && dashboardData && activeReportLink === "rdv" && chartsData && (
+                <>
+                  <ReportFiltersBar
+                    reportTitle={reportTitle}
+                    description="Analyse des rendez-vous à partir du fichier Excel importé."
+                    graphMode={graphMode}
+                    setGraphMode={setGraphMode}
+                    graphStart={graphStart}
+                    setGraphStart={setGraphStart}
+                    graphEnd={graphEnd}
+                    setGraphEnd={setGraphEnd}
+                    dataSource={dataSource}
+                    setDataSource={setDataSource}
+                    showDateRange={false}
+                    sourceOptions={[{ value: "excel", label: "Excel" }]}
+                  />
+
+                  <TopKpiStrip
+                    cards={(rdvAnalytics.cards || []).map((card) => ({
+                      key: card.key,
+                      label: card.label,
+                      value: card.value,
+                      hint: "",
+                      icon: BarChart3,
+                    }))}
+                  />
+
+                  <section className="space-y-5">
+                    <div
+                      id="rdv-timeline-chart"
+                      className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
+                    >
+                      <ChartHeader icon={TrendingUp} title="Évolution des RDV" printTargetId="rdv-timeline-chart" />
+                      <div className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={rdvAnalytics.timeline || []}>
+                            <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                            <XAxis dataKey="label" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Line type="monotone" dataKey="value" stroke="#22d3ee" strokeWidth={3} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div
+                      id="rdv-telepro-chart"
+                      className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
+                    >
+                      <ChartHeader icon={Users} title="RDV par télépro" printTargetId="rdv-telepro-chart" />
+                      <div className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={rdvAnalytics.byTelepro || []}>
+                            <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                            <XAxis dataKey="name" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Bar dataKey="value" fill="#22d3ee" radius={[8, 8, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div
+                      id="rdv-product-chart"
+                      className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
+                    >
+                      <ChartHeader icon={BarChart3} title="RDV par produit" printTargetId="rdv-product-chart" />
+                      <div className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={rdvAnalytics.byProduct || []}>
+                            <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                            <XAxis dataKey="name" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Bar dataKey="value" fill="#22d3ee" radius={[8, 8, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div
+                      id="rdv-heating-chart"
+                      className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
+                    >
+                      <ChartHeader icon={Waves} title="RDV par mode de chauffage" printTargetId="rdv-heating-chart" />
+                      <div className="h-[320px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={rdvAnalytics.byHeating || []}>
+                            <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                            <XAxis dataKey="name" stroke="#94a3b8" />
+                            <YAxis stroke="#94a3b8" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "#020617",
+                                border: "1px solid rgba(34,211,238,0.25)",
+                                borderRadius: "16px",
+                                color: "#e2e8f0",
+                              }}
+                            />
+                            <Bar dataKey="value" fill="#22d3ee" radius={[8, 8, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </section>
+                </>
+              )}
+
+              {!loading && dashboardData && activeReportLink === "agents-table" && chartsData && (
+                <>
+                  <ReportFiltersBar
+                    reportTitle={reportTitle}
+                    description="Analyse détaillée du temps d'appel et de l'activité des agents."
+                    graphMode={graphMode}
+                    setGraphMode={setGraphMode}
+                    graphStart={graphStart}
+                    setGraphStart={setGraphStart}
+                    graphEnd={graphEnd}
+                    setGraphEnd={setGraphEnd}
+                    dataSource={dataSource}
+                    setDataSource={setDataSource}
+                  />
+
+                  <TopKpiStrip cards={chartsData.topStatsCards} />
+
+                  <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                    <ChartHeader
+                      icon={Users}
+                      title="Temps d'appel des agents"
+                      printTargetId="agents-time-table"
+                    />
+
+                    <div id="agents-time-table" className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-cyan-500/20 text-slate-400">
+                            <th className="px-3 py-2 text-left">Agent</th>
+                            <th className="px-3 py-2 text-left">Campagne</th>
+                            <th className="px-3 py-2 text-right">Échantillons</th>
+                            <th className="px-3 py-2 text-right">En appel</th>
+                            <th className="px-3 py-2 text-right">En pause</th>
+                            <th className="px-3 py-2 text-right">Prêt</th>
+                            <th className="px-3 py-2 text-right">Dispo</th>
+                            <th className="px-3 py-2 text-right">Dead</th>
+                            <th className="px-3 py-2 text-right">Latence moy.</th>
+                            <th className="px-3 py-2 text-right">Min appels</th>
+                            <th className="px-3 py-2 text-right">Max appels</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(agentAnalytics.agents || []).map((agent, idx) => (
+                            <tr key={`${agent.agentUser || "agent"}-${idx}`} className="border-b border-white/5 text-slate-200">
+                              <td className="px-3 py-2">{agent.agentUser || "-"}</td>
+                              <td className="px-3 py-2">{agent.campaign || "-"}</td>
+                              <td className="px-3 py-2 text-right">{agent.samples ?? 0}</td>
+                              <td className="px-3 py-2 text-right">{agent.incallSamples ?? 0}</td>
+                              <td className="px-3 py-2 text-right">{agent.pausedSamples ?? 0}</td>
+                              <td className="px-3 py-2 text-right">{agent.readySamples ?? 0}</td>
+                              <td className="px-3 py-2 text-right">{agent.dispoSamples ?? 0}</td>
+                              <td className="px-3 py-2 text-right">{agent.deadSamples ?? 0}</td>
+                              <td className="px-3 py-2 text-right">{agent.avgLatencyMs ?? 0} ms</td>
+                              <td className="px-3 py-2 text-right">{agent.minCalls ?? 0}</td>
+                              <td className="px-3 py-2 text-right">{agent.maxCalls ?? 0}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
                 </>
               )}
 
@@ -1887,6 +2650,7 @@ export default function ActivityDisplay() {
                   </section>
                 </>
               )}
+
             </div>
           </main>
         </div>

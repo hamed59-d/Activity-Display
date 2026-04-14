@@ -12,7 +12,13 @@ import {
   persistSnapshotToDb,
   getRecordedHistory,
   getRecordedAgentAnalytics,
+  getRecordedPauseHistory,
+  getRecordedAgentCallsAtHour,
 } from "./db.js";
+import fs from "fs";
+import path from "path";
+import xlsx from "xlsx";
+const XLSX = xlsx;
 
 dotenv.config();
 
@@ -31,6 +37,169 @@ const DB_USER = process.env.DB_USER || "root";
 const DB_PASSWORD = process.env.DB_PASSWORD || "";
 const DB_NAME = process.env.DB_NAME || "vicidial";*/
 const RECORD_SNAPSHOT_INTERVAL_MS = Number(process.env.RECORD_SNAPSHOT_INTERVAL_MS || 60000);
+
+
+const EXCEL_RDV_PATH = path.resolve(process.cwd(), "excel", "Viccismart PRO GLOBAL.xlsx");
+
+function normalizeRdvText(value) {
+  if (value == null) return "";
+  return String(value).trim();
+}
+
+function parseRdvDate(value) {
+  if (value == null || value === "") return null;
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed) {
+      const d = new Date(
+        parsed.y,
+        (parsed.m || 1) - 1,
+        parsed.d || 1,
+        parsed.H || 0,
+        parsed.M || 0,
+        parsed.S || 0
+      );
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+  }
+
+  const raw = normalizeRdvText(value);
+  if (!raw) return null;
+
+  let s = raw
+    .replace(/à/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2})(?:[:h](\d{1,2}))?)?$/i);
+  if (m) {
+    const [, dd, mm, yyyy, hh = "00", mi = "00"] = m;
+    const d = new Date(
+      Number(yyyy),
+      Number(mm) - 1,
+      Number(dd),
+      Number(hh),
+      Number(mi),
+      0
+    );
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})(?:\s+(\d{1,2})(?:[:h](\d{1,2}))?)?$/i);
+  if (m) {
+    const [, dd, mm, yy, hh = "00", mi = "00"] = m;
+    const yyyy = Number(yy) >= 70 ? `19${yy}` : `20${yy}`;
+    const d = new Date(
+      Number(yyyy),
+      Number(mm) - 1,
+      Number(dd),
+      Number(hh),
+      Number(mi),
+      0
+    );
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  s = s.replace(/(\d{1,2})h(\d{0,2})/gi, (_, h, m2) => `${h}:${m2 || "00"}`);
+  s = s.replace(/(\d{1,2})\s*h/gi, "$1:00");
+
+  const parsed = new Date(s);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function loadRdvRows() {
+  if (!fs.existsSync(EXCEL_RDV_PATH)) return [];
+
+  const workbook = XLSX.readFile(EXCEL_RDV_PATH, { cellDates: true });
+  const rows = [];
+
+  const pickValue = (row, candidates) => {
+    const entries = Object.entries(row || {});
+    for (const candidate of candidates) {
+      const found = entries.find(([key]) =>
+        normalizeRdvText(key).toLowerCase() === candidate.toLowerCase()
+      );
+      if (found && found[1] != null && String(found[1]).trim() !== "") {
+        return found[1];
+      }
+    }
+
+    for (const candidate of candidates) {
+      const found = entries.find(([key]) =>
+        normalizeRdvText(key).toLowerCase().includes(candidate.toLowerCase())
+      );
+      if (found && found[1] != null && String(found[1]).trim() !== "") {
+        return found[1];
+      }
+    }
+
+    return "";
+  };
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const json = XLSX.utils.sheet_to_json(sheet, {
+      defval: "",
+      raw: true,
+    });
+
+    for (const row of json) {
+      const dateRdv = pickValue(row, ["date de rdv", "rdv", "date rdv"]);
+      const telepro = pickValue(row, ["telepro", "télépro", "tele pro"]);
+      const produit = pickValue(row, ["produit", "product"]);
+      const modeChauffage = pickValue(row, ["mode de chauffage", "chauffage"]);
+      const batiment = pickValue(row, ["batiment", "bâtiment"]);
+
+      rows.push({
+        sheetName,
+        telepro: normalizeRdvText(telepro),
+        produit: normalizeRdvText(produit),
+        modeChauffage: normalizeRdvText(modeChauffage),
+        batiment: normalizeRdvText(batiment),
+        dateRdvRaw: dateRdv,
+        dateRdv: parseRdvDate(dateRdv),
+      });
+    }
+  }
+
+  return rows.filter(
+    (row) =>
+      row.telepro ||
+      row.produit ||
+      row.modeChauffage ||
+      row.batiment ||
+      row.dateRdvRaw
+  );
+}
+
+function aggregateSimpleCount(rows, key, limit = 10) {
+  const map = new Map();
+
+  for (const row of rows) {
+    const label = normalizeRdvText(row[key]) || "(non renseigné)";
+    map.set(label, (map.get(label) || 0) + 1);
+  }
+
+  return [...map.entries()]
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name))
+    .slice(0, limit);
+}
+
+function aggregateRdvTimeline(rows, mode) {
+  const buckets = new Map();
+
+  for (const row of rows) {
+    if (!row.dateRdv) continue;
+    const key = getBucketKey(row.dateRdv, mode);
+    buckets.set(key, (buckets.get(key) || 0) + 1);
+  }
+
+  return [...buckets.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
 
 //let dbPool = null;
 let collectorTimer = null;
@@ -534,6 +703,35 @@ function aggregateHistory(mode, startDate, endDate, history = snapshotHistory) {
   }));
 }
 
+function getRealtimePauseHistory(mode, startDate, endDate, normalizePause) {
+  const buckets = new Map();
+
+  for (const snapshot of snapshotHistory) {
+    const date = new Date(snapshot.capturedAt);
+    if (date < startDate || date > endDate) continue;
+
+    const key = getBucketKey(date, mode);
+
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        label: key,
+        brief: 0,
+        dejeuner: 0,
+        toilette: 0,
+      });
+    }
+
+    const bucket = buckets.get(key);
+
+    const normalized = normalizePause(snapshot.pauseCode || snapshot.pauseLabel || "");
+    if (!normalized) continue;
+
+    bucket[normalized] += 1;
+  }
+
+  return [...buckets.values()];
+}
+
 function absolutizeVicidialAssetPaths(html) {
   return html.replace(
     /(src|href)=["'](images\/[^"']+)["']/gi,
@@ -946,6 +1144,51 @@ app.get("/api/activity-display/agent-analytics", async (_req, res) => {
 });
 
 
+app.get("/api/activity-display/agent-calls-at-time", async (req, res) => {
+  try {
+    const mode = req.query.mode === "manual" ? "manual" : "realtime";
+
+    if (mode === "realtime") {
+      const html = await fetchVicidialHtml();
+      const payload = buildResponseFromHtml(html);
+
+      const agents = (payload.agentRows || [])
+        .map((row) => {
+          const status = String(row.status || "").trim().toUpperCase();
+          return {
+            agentUser: row.user || "(sans agent)",
+            activeCalls: status === "INCALL" ? 1 : 0,
+            status,
+          };
+        })
+        .sort((a, b) => a.agentUser.localeCompare(b.agentUser));
+
+      return res.json({
+        mode: "realtime",
+        capturedAt: payload.updatedAt || new Date().toISOString(),
+        agents,
+      });
+    }
+
+    const targetDate = toDateSafe(req.query.at) || new Date();
+    const result = await getRecordedAgentCallsAtHour(targetDate);
+
+    return res.json({
+      mode: "manual",
+      capturedAt: result.capturedAt,
+      hourStart: result.hourStart,
+      hourEnd: result.hourEnd,
+      agents: result.agents || [],
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: "Failed to build agent calls at time",
+      details: error.message,
+    });
+  }
+});
+
+
 app.get("/api/activity-display/raw", async (_req, res) => {
   try {
     const html = await fetchVicidialHtml();
@@ -970,6 +1213,136 @@ app.get("/api/activity-display/raw", async (_req, res) => {
     `);
   } catch (error) {
     res.status(500).send(error.message);
+  }
+});
+
+app.get("/api/activity-display/rdv-analytics", async (req, res) => {
+  try {
+    const mode = ["Sec", "Min", "HH", "DD", "W", "MM", "YYYY"].includes(req.query.mode)
+      ? req.query.mode
+      : "DD";
+
+    const endDate = toDateSafe(req.query.end) || new Date("2100-01-01T00:00:00");
+    const startDate = toDateSafe(req.query.start) || new Date("2000-01-01T00:00:00");
+
+    const allRows = loadRdvRows();
+
+    const filteredRows = allRows.filter((row) => {
+      if (!row.dateRdv) return false;
+      return row.dateRdv >= startDate && row.dateRdv <= endDate;
+    });
+
+    const rows = filteredRows.length ? filteredRows : allRows;
+    const withParsedDate = rows.filter((row) => row.dateRdv);
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      cards: [
+        { key: "total", label: "Total RDV", value: rows.length },
+        { key: "dates_ok", label: "RDV datés", value: withParsedDate.length },
+        {
+          key: "telepros",
+          label: "Télépros actives",
+          value: new Set(rows.map((r) => r.telepro).filter(Boolean)).size,
+        },
+        {
+          key: "produits",
+          label: "Produits concernés",
+          value: new Set(rows.map((r) => r.produit).filter(Boolean)).size,
+        },
+      ],
+      timeline: aggregateRdvTimeline(withParsedDate, mode),
+      byTelepro: aggregateSimpleCount(rows, "telepro", 10),
+      byProduct: aggregateSimpleCount(rows, "produit", 10),
+      byHeating: aggregateSimpleCount(rows, "modeChauffage", 10),
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: "Failed to build RDV analytics",
+      details: error.message,
+    });
+  }
+});
+
+app.get("/api/activity-display/pause-history", async (req, res) => {
+  try {
+    const mode = ["Sec", "Min", "HH", "DD", "W", "MM", "YYYY"].includes(req.query.mode)
+      ? req.query.mode
+      : "Min";
+
+    const source = req.query.source === "record" ? "record" : "realtime";
+    const endDate = toDateSafe(req.query.end) || new Date();
+    const startDate = toDateSafe(req.query.start) || new Date(endDate.getTime() - 60 * 60 * 1000);
+
+    const normalizePause = (value = "") => {
+      const v = String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim()
+        .toLowerCase();
+
+      if (!v || v === "-" || v === "0") return null;
+
+      if (
+        v.includes("brief") ||
+        v.includes("briefing") ||
+        v === "brf" ||
+        v.includes("reunion")
+      ) {
+        return "brief";
+      }
+
+      if (
+        v.includes("dej") ||
+        v.includes("dej.") ||
+        v.includes("dejeuner") ||
+        v.includes("lunch") ||
+        v.includes("repas") ||
+        v.includes("meal")
+      ) {
+        return "dejeuner";
+      }
+
+      if (
+        v.includes("toilet") ||
+        v.includes("wc") ||
+        v.includes("bathroom") ||
+        v.includes("restroom") ||
+        v.includes("bio")
+      ) {
+        return "toilette";
+      }
+
+      return null;
+    };
+
+    let rows = [];
+
+    if (source === "record") {
+      rows = await getRecordedPauseHistory(mode, startDate, endDate, normalizePause);
+    } else {
+      rows = getRealtimePauseHistory(mode, startDate, endDate, normalizePause);
+    }
+
+    const points = Array.isArray(rows)
+      ? rows
+      : Array.isArray(rows?.points)
+        ? rows.points
+        : Object.values(rows || {});
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      mode,
+      source,
+      start: startDate.toISOString(),
+      end: startDate.toISOString(),
+      points,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: "Failed to build pause history",
+      details: error.message,
+    });
   }
 });
 
