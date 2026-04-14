@@ -849,6 +849,782 @@ function parseUserStatsHtml(html, context = {}) {
   return { meta, sections };
 }
 
+function normalizeHeaderKey(label = "") {
+  return String(label || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+function sectionRowsToObjects(section) {
+  const columns = (section?.columns || []).map((column, index) => {
+    return normalizeHeaderKey(column) || `col_${index}`;
+  });
+
+  return (section?.rows || []).map((row) => {
+    const record = {};
+    columns.forEach((column, index) => {
+      record[column] = String(row[index] ?? "").trim();
+    });
+    return record;
+  });
+}
+
+function pickUserStatsSection(sections, bucket, key) {
+  return (sections?.[bucket] || []).find((section) => section.key === key) || null;
+}
+
+function formatSecondsToHms(totalSeconds = 0) {
+  const safe = Math.max(0, Number(totalSeconds) || 0);
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const seconds = Math.floor(safe % 60);
+  return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function extractHourBucket(rawValue = "") {
+  const match = String(rawValue).match(/\b(\d{2}):\d{2}(?::\d{2})?\b/);
+  return match ? `${match[1]}:00` : null;
+}
+
+function extractTimeLabel(rawValue = "") {
+  const match = String(rawValue).match(/\b(\d{2}:\d{2})(?::\d{2})?\b/);
+  return match ? match[1] : String(rawValue || "").trim();
+}
+
+function buildCountSeries(records, key, { exclude = ["", "-"] } = {}) {
+  const map = new Map();
+
+  for (const record of records || []) {
+    const label = String(record[key] ?? "").trim();
+    if (!label || exclude.includes(label)) continue;
+    map.set(label, (map.get(label) || 0) + 1);
+  }
+
+  return [...map.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function buildHourlySeries(records, dateKey, valueKey = null) {
+  const map = new Map();
+
+  for (const record of records || []) {
+    const bucket = extractHourBucket(record[dateKey]);
+    if (!bucket) continue;
+
+    const current = map.get(bucket) || { label: bucket, value: 0 };
+    current.value += valueKey ? toInt(record[valueKey], 0) : 1;
+    map.set(bucket, current);
+  }
+
+  return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function buildDurationHistogram(records, fieldKey) {
+  const bins = [
+    { label: "0-10s", min: 0, max: 10, value: 0 },
+    { label: "11-30s", min: 11, max: 30, value: 0 },
+    { label: "31-60s", min: 31, max: 60, value: 0 },
+    { label: "61-180s", min: 61, max: 180, value: 0 },
+    { label: "180s+", min: 181, max: Number.POSITIVE_INFINITY, value: 0 },
+  ];
+
+  for (const record of records || []) {
+    const seconds = toInt(record[fieldKey], 0);
+    const bucket = bins.find((item) => seconds >= item.min && seconds <= item.max);
+    if (bucket) bucket.value += 1;
+  }
+
+  return bins.map(({ label, value }) => ({ label, value }));
+}
+
+function sumField(records, key) {
+  return (records || []).reduce((sum, record) => sum + toInt(record[key], 0), 0);
+}
+
+function buildOverviewGraphSections(sections) {
+  const graphs = [];
+
+  const talkSection = pickUserStatsSection(sections, "overview", "talk_time_status");
+  if (talkSection) {
+    const rows = sectionRowsToObjects(talkSection);
+    const statusRows = rows.filter(
+      (row) => String(row.status || "").trim() && String(row.status || "").toUpperCase() !== "TOTAL_CALLS"
+    );
+    const totalRow = rows.find(
+      (row) => String(row.status || "").toUpperCase() === "TOTAL_CALLS"
+    );
+
+    graphs.push({
+      key: "overview_talk_time_status_graph",
+      title: "Agent Talk Time and Status - Graph",
+      subtitle: "Répartition des statuts et durée cumulée par statut.",
+      downloadUrl: talkSection.downloadUrl,
+      cards: [
+        { label: "Total calls", value: totalRow?.count || "0" },
+        { label: "Temps cumulé", value: totalRow?.hours_mm_ss || "00:00:00" },
+        { label: "Statuts distincts", value: String(statusRows.length) },
+      ],
+      charts: [
+        {
+          type: "pie",
+          title: "Répartition par volume",
+          data: statusRows.map((row) => ({
+            label: row.status,
+            value: toInt(row.count, 0),
+          })),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Durée par statut",
+          data: statusRows.map((row) => ({
+            label: row.status,
+            seconds: toSeconds(row.hours_mm_ss),
+          })),
+          series: [{ key: "seconds", label: "Durée" }],
+          nameKey: "label",
+          valueFormat: "duration",
+        },
+      ],
+    });
+  }
+
+  const loginSection = pickUserStatsSection(sections, "overview", "login_logout");
+  if (loginSection) {
+    const rows = sectionRowsToObjects(loginSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date || "")
+    );
+
+    graphs.push({
+      key: "overview_login_logout_graph",
+      title: "Agent Login and Logout Time - Graph",
+      subtitle: "Vue synthétique des événements de connexion et des campagnes touchées.",
+      downloadUrl: loginSection.downloadUrl,
+      cards: [
+        { label: "Événements", value: String(rows.length) },
+        {
+          label: "Première connexion",
+          value: rows[0]?.date || "-",
+        },
+        {
+          label: "Campagnes distinctes",
+          value: String(new Set(rows.map((row) => row.campaign).filter(Boolean)).size),
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Événements par type",
+          data: buildCountSeries(rows, "event"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Occurrences par campagne",
+          data: buildCountSeries(rows, "campaign"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  const webLoginsSection = pickUserStatsSection(sections, "overview", "web_logins");
+  if (webLoginsSection) {
+    const rows = sectionRowsToObjects(webLoginsSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date || "")
+    );
+
+    graphs.push({
+      key: "overview_web_logins_graph",
+      title: "Agent Webserver and URL Logins - Graph",
+      subtitle: "Origine web et serveurs utilisés sur la plage sélectionnée.",
+      downloadUrl: webLoginsSection.downloadUrl,
+      cards: [
+        { label: "Web logins", value: String(rows.length) },
+        {
+          label: "Serveurs web distincts",
+          value: String(new Set(rows.map((row) => row.web_server).filter(Boolean)).size),
+        },
+        {
+          label: "Serveurs dialer distincts",
+          value: String(new Set(rows.map((row) => row.dialer_server).filter(Boolean)).size),
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Connexions par web server",
+          data: buildCountSeries(rows, "web_server"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Connexions par URL",
+          data: buildCountSeries(rows, "login_url"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  const timeclockSection = pickUserStatsSection(sections, "overview", "timeclock");
+  if (timeclockSection) {
+    const rows = sectionRowsToObjects(timeclockSection);
+    const totalSeconds = rows.reduce((sum, row) => sum + toSeconds(row.hours_mm_ss), 0);
+
+    graphs.push({
+      key: "overview_timeclock_graph",
+      title: "Timeclock Login and Logout Time - Graph",
+      subtitle: "Lecture graphique du timeclock et du temps cumulé.",
+      downloadUrl: timeclockSection.downloadUrl,
+      cards: [
+        { label: "Lignes", value: String(rows.length) },
+        { label: "Temps cumulé", value: formatSecondsToHms(totalSeconds) },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Occurrences par événement",
+          data: buildCountSeries(rows, "event"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  const closerSection = pickUserStatsSection(sections, "overview", "closer_ingroup");
+  if (closerSection) {
+    const rows = sectionRowsToObjects(closerSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    graphs.push({
+      key: "overview_closer_ingroup_graph",
+      title: "Closer In-Group Selection Logs - Graph",
+      subtitle: "Répartition des sélections closer sur la période.",
+      downloadUrl: closerSection.downloadUrl,
+      cards: [
+        { label: "Sélections", value: String(rows.length) },
+        {
+          label: "Campagnes distinctes",
+          value: String(new Set(rows.map((row) => row.campaign).filter(Boolean)).size),
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Sélections par campagne",
+          data: buildCountSeries(rows, "campaign"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Sélections par manager",
+          data: buildCountSeries(rows, "manager"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  return graphs;
+}
+
+function buildCallsGraphSections(sections) {
+  const graphs = [];
+
+  const outboundSection = pickUserStatsSection(sections, "calls", "outbound_calls");
+  if (outboundSection) {
+    const rows = sectionRowsToObjects(outboundSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+    const totalSeconds = sumField(rows, "length");
+
+    graphs.push({
+      key: "calls_outbound_graph",
+      title: "Outbound Calls - Graph",
+      subtitle: "Volume, statut et distribution de durée des appels sortants.",
+      downloadUrl: outboundSection.downloadUrl,
+      cards: [
+        { label: "Appels sortants", value: String(rows.length) },
+        { label: "Durée cumulée", value: formatSecondsToHms(totalSeconds) },
+        {
+          label: "Durée moyenne",
+          value: rows.length ? `${Math.round(totalSeconds / rows.length)}s` : "0s",
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Volume par heure",
+          data: buildHourlySeries(rows, "date_time"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "pie",
+          title: "Répartition des statuts",
+          data: buildCountSeries(rows, "status"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Distribution des durées",
+          data: buildDurationHistogram(rows, "length"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  const outboundEmailsSection = pickUserStatsSection(sections, "calls", "outbound_emails");
+  if (outboundEmailsSection) {
+    const rows = sectionRowsToObjects(outboundEmailsSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    graphs.push({
+      key: "calls_outbound_emails_graph",
+      title: "Outbound Emails - Graph",
+      subtitle: "Lecture graphique des emails sortants enregistrés.",
+      downloadUrl: outboundEmailsSection.downloadUrl,
+      cards: [
+        { label: "Emails sortants", value: String(rows.length) },
+        {
+          label: "Campagnes distinctes",
+          value: String(new Set(rows.map((row) => row.campaign).filter(Boolean)).size),
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Emails par campagne",
+          data: buildCountSeries(rows, "campaign"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Emails par destinataire",
+          data: buildCountSeries(rows, "email_to"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  const inboundCloserSection = pickUserStatsSection(sections, "calls", "inbound_closer_calls");
+  if (inboundCloserSection) {
+    const rows = sectionRowsToObjects(inboundCloserSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    graphs.push({
+      key: "calls_inbound_closer_graph",
+      title: "Inbound Closer Calls - Graph",
+      subtitle: "Vue synthétique des appels closer entrants.",
+      downloadUrl: inboundCloserSection.downloadUrl,
+      cards: [
+        { label: "Appels entrants", value: String(rows.length) },
+        { label: "Wait cumulé", value: formatSecondsToHms(sumField(rows, "wait_s")) },
+        { label: "Agent cumulé", value: formatSecondsToHms(sumField(rows, "agent_s")) },
+      ],
+      charts: [
+        {
+          type: "pie",
+          title: "Statuts des appels entrants",
+          data: buildCountSeries(rows, "status"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Volume par heure",
+          data: buildHourlySeries(rows, "date_time"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  const manualOutboundSection = pickUserStatsSection(sections, "calls", "manual_outbound_calls");
+  if (manualOutboundSection) {
+    const rows = sectionRowsToObjects(manualOutboundSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    graphs.push({
+      key: "calls_manual_outbound_graph",
+      title: "Manual Outbound Calls - Graph",
+      subtitle: "Répartition des appels sortants manuels.",
+      downloadUrl: manualOutboundSection.downloadUrl,
+      cards: [
+        { label: "Appels manuels", value: String(rows.length) },
+        {
+          label: "Call types distincts",
+          value: String(new Set(rows.map((row) => row.call_type).filter(Boolean)).size),
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Appels par type",
+          data: buildCountSeries(rows, "call_type"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Appels par serveur",
+          data: buildCountSeries(rows, "server"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  return graphs;
+}
+
+function buildActivityGraphSections(sections) {
+  const graphs = [];
+
+  const activitySection = pickUserStatsSection(sections, "activity", "agent_activity");
+  if (activitySection) {
+    const rows = sectionRowsToObjects(activitySection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    const orderedRows = [...rows].sort((a, b) =>
+      String(a.date_time || "").localeCompare(String(b.date_time || ""))
+    );
+
+    const timeline = orderedRows.map((row) => ({
+      label: extractTimeLabel(row.date_time),
+      talk: toInt(row.talk, 0),
+      wait: toInt(row.wait, 0),
+      pause: toInt(row.pause, 0),
+      dispo: toInt(row.dispo, 0),
+      customer: toInt(row.customer, 0),
+    }));
+
+    graphs.push({
+      key: "activity_agent_activity_graph",
+      title: "Agent Activity - Graph",
+      subtitle: "Visualisation des temps talk, wait, pause, dispo et customer.",
+      downloadUrl: activitySection.downloadUrl,
+      cards: [
+        { label: "Échantillons", value: String(rows.length) },
+        { label: "Talk cumulé", value: formatSecondsToHms(sumField(rows, "talk")) },
+        { label: "Wait cumulé", value: formatSecondsToHms(sumField(rows, "wait")) },
+        { label: "Pause cumulée", value: formatSecondsToHms(sumField(rows, "pause")) },
+      ],
+      charts: [
+        {
+          type: "area",
+          title: "Mix d'activité dans le temps",
+          data: timeline,
+          nameKey: "label",
+          valueFormat: "integer",
+          stacked: true,
+          series: [
+            { key: "talk", label: "Talk" },
+            { key: "wait", label: "Wait" },
+            { key: "pause", label: "Pause" },
+            { key: "customer", label: "Customer" },
+            { key: "dispo", label: "Dispo" },
+          ],
+        },
+        {
+          type: "pie",
+          title: "Répartition des pause codes",
+          data: buildCountSeries(rows, "pause_code"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "pie",
+          title: "Répartition des statuts",
+          data: buildCountSeries(rows, "status"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  const managerPauseSection = pickUserStatsSection(
+    sections,
+    "activity",
+    "manager_pause_approvals"
+  );
+
+  if (managerPauseSection) {
+    const rows = sectionRowsToObjects(managerPauseSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    graphs.push({
+      key: "activity_manager_pause_graph",
+      title: "Manager Pause Code Approvals - Graph",
+      subtitle: "Lecture graphique des validations de pause manager.",
+      downloadUrl: managerPauseSection.downloadUrl,
+      cards: [
+        { label: "Validations", value: String(rows.length) },
+        {
+          label: "Agents concernés",
+          value: String(new Set(rows.map((row) => row.agent).filter(Boolean)).size),
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Validations par pause code",
+          data: buildCountSeries(rows, "pause_code"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Validations par agent",
+          data: buildCountSeries(rows, "agent"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  return graphs;
+}
+
+function buildRecordingsGraphSections(sections) {
+  const graphs = [];
+
+  const recordingsSection = pickUserStatsSection(sections, "recordings", "recordings");
+  if (recordingsSection) {
+    const rows = sectionRowsToObjects(recordingsSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    const totalSeconds = sumField(rows, "seconds");
+
+    graphs.push({
+      key: "recordings_main_graph",
+      title: "Recordings - Graph",
+      subtitle: "Vue volumétrique et distribution des durées des enregistrements.",
+      downloadUrl: recordingsSection.downloadUrl,
+      cards: [
+        { label: "Enregistrements", value: String(rows.length) },
+        { label: "Durée cumulée", value: formatSecondsToHms(totalSeconds) },
+        {
+          label: "Durée moyenne",
+          value: rows.length ? `${Math.round(totalSeconds / rows.length)}s` : "0s",
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Enregistrements par heure",
+          data: buildHourlySeries(rows, "date_time"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Distribution des durées",
+          data: buildDurationHistogram(rows, "seconds"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Enregistrements par lead",
+          data: buildCountSeries(rows, "lead").slice(0, 10),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  return graphs;
+}
+
+function buildLeadsGraphSections(sections) {
+  const graphs = [];
+
+  const searchesSection = pickUserStatsSection(sections, "leads", "lead_searches");
+  if (searchesSection) {
+    const rows = sectionRowsToObjects(searchesSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    graphs.push({
+      key: "leads_searches_graph",
+      title: "Lead Searches - Graph",
+      subtitle: "Visualisation des recherches de leads et types utilisés.",
+      downloadUrl: searchesSection.downloadUrl,
+      cards: [
+        { label: "Recherches", value: String(rows.length) },
+        {
+          label: "Types distincts",
+          value: String(new Set(rows.map((row) => row.type).filter(Boolean)).size),
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Recherches par type",
+          data: buildCountSeries(rows, "type"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Recherches par heure",
+          data: buildHourlySeries(rows, "date_time"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  const previewSection = pickUserStatsSection(sections, "leads", "preview_lead_skips");
+  if (previewSection) {
+    const rows = sectionRowsToObjects(previewSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    graphs.push({
+      key: "leads_preview_skips_graph",
+      title: "Preview Lead Skips - Graph",
+      subtitle: "Répartition des sauts de leads en preview.",
+      downloadUrl: previewSection.downloadUrl,
+      cards: [
+        { label: "Skips", value: String(rows.length) },
+        {
+          label: "Campagnes distinctes",
+          value: String(new Set(rows.map((row) => row.campaign).filter(Boolean)).size),
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Skips par campagne",
+          data: buildCountSeries(rows, "campaign"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Skips par statut",
+          data: buildCountSeries(rows, "status"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  const switchesSection = pickUserStatsSection(sections, "leads", "agent_lead_switches");
+  if (switchesSection) {
+    const rows = sectionRowsToObjects(switchesSection).filter((row) =>
+      /^\d{4}-\d{2}-\d{2}/.test(row.date_time || "")
+    );
+
+    graphs.push({
+      key: "leads_switches_graph",
+      title: "Agent Lead Switches - Graph",
+      subtitle: "Vue synthétique des bascules de leads.",
+      downloadUrl: switchesSection.downloadUrl,
+      cards: [
+        { label: "Lead switches", value: String(rows.length) },
+        {
+          label: "Campagnes distinctes",
+          value: String(new Set(rows.map((row) => row.campaign).filter(Boolean)).size),
+        },
+      ],
+      charts: [
+        {
+          type: "bar",
+          title: "Switches par campagne",
+          data: buildCountSeries(rows, "campaign"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+        {
+          type: "bar",
+          title: "Switches par heure",
+          data: buildHourlySeries(rows, "date_time"),
+          dataKey: "value",
+          nameKey: "label",
+          valueFormat: "integer",
+        },
+      ],
+    });
+  }
+
+  return graphs;
+}
+
+function buildUserStatsGraphs(sections) {
+  return {
+    overview: buildOverviewGraphSections(sections),
+    calls: buildCallsGraphSections(sections),
+    activity: buildActivityGraphSections(sections),
+    recordings: buildRecordingsGraphSections(sections),
+    leads: buildLeadsGraphSections(sections),
+  };
+}
+
 async function fetchVicidialUserStatsHtml({
   user,
   beginDate,
@@ -1451,13 +2227,18 @@ app.get("/api/activity-display/user-stats", async (req, res) => {
       searchArchived,
     });
 
-    const payload = parseUserStatsHtml(html, {
+    const parsed = parseUserStatsHtml(html, {
       user,
       beginDate,
       endDate,
       callStatus,
       searchArchived,
     });
+
+    const payload = {
+      ...parsed,
+      graphs: buildUserStatsGraphs(parsed.sections),
+    };
 
     res.set("Cache-Control", "no-store");
     res.json(payload);

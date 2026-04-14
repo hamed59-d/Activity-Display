@@ -54,6 +54,23 @@ const reportOptions = [
 
 const chartPalette = ["#22d3ee", "#38bdf8", "#6366f1", "#a855f7", "#10b981", "#f59e0b"];
 
+const sharedTooltipContentStyle = {
+  background: "#020617",
+  border: "1px solid rgba(34,211,238,0.25)",
+  borderRadius: "16px",
+  color: "#e2e8f0",
+  boxShadow: "0 10px 30px rgba(2, 6, 23, 0.55)",
+};
+
+const sharedTooltipItemStyle = {
+  color: "#e2e8f0",
+};
+
+const sharedTooltipLabelStyle = {
+  color: "#cbd5e1",
+  fontWeight: 600,
+};
+
 const statIcons = {
   "Appels actifs actuels": PhoneCall,
   "Appels en sonnerie": BellRing,
@@ -97,9 +114,7 @@ const topStatLabelsFr = {
   "Agents In Dispo": "Agents en dispo",
 };
 
-const sidebarItems = [
-  { key: "reports", label: "Rapports", icon: BarChart3 },
-];
+const sidebarItems = [];
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 
@@ -115,19 +130,70 @@ const reportNavItems = [
 
 const userStatsNavItems = [
   { key: "user-stats-overview", label: "Synthèse & connexions", icon: RadioTower },
+  {
+    key: "user-stats-overview-graph",
+    label: "Synthèse & connexions - Graph",
+    icon: TrendingUp,
+    indent: true,
+  },
+
   { key: "user-stats-calls", label: "Appels & emails", icon: PhoneCall },
+  {
+    key: "user-stats-calls-graph",
+    label: "Appels & emails - Graph",
+    icon: TrendingUp,
+    indent: true,
+  },
+
   { key: "user-stats-activity", label: "Activité agent", icon: Waves },
+  {
+    key: "user-stats-activity-graph",
+    label: "Activité agent - Graph",
+    icon: TrendingUp,
+    indent: true,
+  },
+
   { key: "user-stats-recordings", label: "Enregistrements", icon: Voicemail },
+  {
+    key: "user-stats-recordings-graph",
+    label: "Enregistrements - Graph",
+    icon: TrendingUp,
+    indent: true,
+  },
+
   { key: "user-stats-leads", label: "Leads & recherches", icon: BookOpenText },
+  {
+    key: "user-stats-leads-graph",
+    label: "Leads & recherches - Graph",
+    icon: TrendingUp,
+    indent: true,
+  },
 ];
 
 const userStatsSectionByLink = {
   "user-stats-overview": "overview",
+  "user-stats-overview-graph": "overview",
+
   "user-stats-calls": "calls",
+  "user-stats-calls-graph": "calls",
+
   "user-stats-activity": "activity",
+  "user-stats-activity-graph": "activity",
+
   "user-stats-recordings": "recordings",
+  "user-stats-recordings-graph": "recordings",
+
   "user-stats-leads": "leads",
+  "user-stats-leads-graph": "leads",
 };
+
+const USER_STATS_GRAPH_LINKS = new Set([
+  "user-stats-overview-graph",
+  "user-stats-calls-graph",
+  "user-stats-activity-graph",
+  "user-stats-recordings-graph",
+  "user-stats-leads-graph",
+]);
 
 function getTodayInputDate() {
   const now = new Date();
@@ -454,7 +520,9 @@ function SidebarAccordionSection({ title, items, activeKey, expanded, onToggle, 
                 key={item.key}
                 type="button"
                 onClick={() => onSelect(item.key)}
-                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left ${
+                className={`flex w-full items-center gap-3 rounded-xl py-2 text-left ${
+                  item.indent ? "pl-8 pr-3" : "px-3"
+                } ${
                   isActive
                     ? "bg-cyan-400/10 text-cyan-200"
                     : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
@@ -552,6 +620,253 @@ function UserStatsTableCard({ section }) {
   );
 }
 
+function formatUserStatsGraphValue(value, format = "integer") {
+  const numeric = Number(value);
+
+  if (format === "duration" && Number.isFinite(numeric)) {
+    const safe = Math.max(0, Math.round(numeric));
+    const hours = Math.floor(safe / 3600);
+    const minutes = Math.floor((safe % 3600) / 60);
+    const seconds = safe % 60;
+    return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+  }
+
+  if (format === "float1" && Number.isFinite(numeric)) {
+    return numeric.toFixed(1);
+  }
+
+  if (format === "percent" && Number.isFinite(numeric)) {
+    return `${numeric.toFixed(1)}%`;
+  }
+
+  if (Number.isFinite(numeric)) {
+    return new Intl.NumberFormat("fr-FR").format(numeric);
+  }
+
+  return value ?? "-";
+}
+
+function UserStatsGraphMetricCard({ card }) {
+  return (
+    <div className="rounded-2xl border border-cyan-500/15 bg-slate-900/70 p-4">
+      <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">
+        {card.label}
+      </div>
+      <div className="mt-2 font-mono text-2xl text-cyan-200">{card.value}</div>
+    </div>
+  );
+}
+
+function UserStatsChartCard({ chart, graphKey }) {
+  if (!chart) return null;
+
+  const data = chart.data || [];
+  const hasData = data.length > 0;
+  const nameKey = chart.nameKey || "label";
+  const series =
+    chart.series?.length
+      ? chart.series
+      : chart.dataKey
+        ? [{ key: chart.dataKey, label: chart.seriesLabel || chart.dataKey }]
+        : [];
+
+  const tooltipFormatter = (value, name) => [
+    formatUserStatsGraphValue(value, chart.valueFormat),
+    name,
+  ];
+
+  return (
+    <div className="rounded-2xl border border-cyan-500/15 bg-slate-900/70 p-4">
+      <div className="mb-3">
+        <h3 className="font-mono text-xs uppercase tracking-[0.22em] text-cyan-200">
+          {chart.title}
+        </h3>
+        {chart.note ? (
+          <div className="mt-1 text-xs text-slate-400">{chart.note}</div>
+        ) : null}
+      </div>
+
+      {!hasData ? (
+        <div className="flex h-72 items-center justify-center rounded-2xl border border-dashed border-white/10 text-sm text-slate-500">
+          Aucune donnée exploitable pour ce graphique.
+        </div>
+      ) : (
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            {chart.type === "pie" ? (
+              <PieChart>
+                <Tooltip
+                  formatter={tooltipFormatter}
+                  contentStyle={sharedTooltipContentStyle}
+                  itemStyle={sharedTooltipItemStyle}
+                  labelStyle={sharedTooltipLabelStyle}
+                />
+                <Legend />
+                <Pie
+                  data={data}
+                  dataKey={chart.dataKey || "value"}
+                  nameKey={nameKey}
+                  innerRadius={52}
+                  outerRadius={95}
+                  paddingAngle={2}
+                >
+                  {data.map((entry, index) => (
+                    <Cell
+                      key={`${graphKey}-pie-${index}`}
+                      fill={chartPalette[index % chartPalette.length]}
+                    />
+                  ))}
+                </Pie>
+              </PieChart>
+            ) : chart.type === "line" ? (
+              <LineChart data={data}>
+                <CartesianGrid stroke="#12324b" vertical={false} />
+                <XAxis dataKey={nameKey} stroke="#94a3b8" />
+                <YAxis
+                  stroke="#94a3b8"
+                  tickFormatter={(value) =>
+                    formatUserStatsGraphValue(value, chart.valueFormat)
+                  }
+                />
+                <Tooltip
+                  formatter={tooltipFormatter}
+                  contentStyle={sharedTooltipContentStyle}
+                  itemStyle={sharedTooltipItemStyle}
+                  labelStyle={sharedTooltipLabelStyle}
+                />
+                <Legend />
+                {series.map((serie, index) => (
+                  <Line
+                    key={`${graphKey}-line-${serie.key}`}
+                    type="monotone"
+                    dataKey={serie.key}
+                    name={serie.label}
+                    stroke={chartPalette[index % chartPalette.length]}
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                ))}
+              </LineChart>
+            ) : chart.type === "area" ? (
+              <AreaChart data={data}>
+                <CartesianGrid stroke="#12324b" vertical={false} />
+                <XAxis dataKey={nameKey} stroke="#94a3b8" />
+                <YAxis
+                  stroke="#94a3b8"
+                  tickFormatter={(value) =>
+                    formatUserStatsGraphValue(value, chart.valueFormat)
+                  }
+                />
+                <Tooltip
+                  formatter={tooltipFormatter}
+                  contentStyle={sharedTooltipContentStyle}
+                  itemStyle={sharedTooltipItemStyle}
+                  labelStyle={sharedTooltipLabelStyle}
+                />
+                <Legend />
+                {series.map((serie, index) => (
+                  <Area
+                    key={`${graphKey}-area-${serie.key}`}
+                    type="monotone"
+                    dataKey={serie.key}
+                    name={serie.label}
+                    stroke={chartPalette[index % chartPalette.length]}
+                    fill={chartPalette[index % chartPalette.length]}
+                    fillOpacity={0.18}
+                    strokeWidth={2}
+                    stackId={chart.stacked ? "user-stats-stack" : undefined}
+                  />
+                ))}
+              </AreaChart>
+            ) : (
+              <BarChart data={data}>
+                <CartesianGrid stroke="#12324b" vertical={false} />
+                <XAxis dataKey={nameKey} stroke="#94a3b8" />
+                <YAxis
+                  stroke="#94a3b8"
+                  tickFormatter={(value) =>
+                    formatUserStatsGraphValue(value, chart.valueFormat)
+                  }
+                />
+                <Tooltip
+                  formatter={tooltipFormatter}
+                  contentStyle={sharedTooltipContentStyle}
+                  itemStyle={sharedTooltipItemStyle}
+                  labelStyle={sharedTooltipLabelStyle}
+                />
+                <Legend />
+                {series.map((serie, index) => (
+                  <Bar
+                    key={`${graphKey}-bar-${serie.key}`}
+                    dataKey={serie.key}
+                    name={serie.label}
+                    fill={chartPalette[index % chartPalette.length]}
+                    radius={[6, 6, 0, 0]}
+                  />
+                ))}
+              </BarChart>
+            )}
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserStatsGraphCard({ section }) {
+  if (!section) return null;
+
+  const cards = section.cards || [];
+  const charts = section.charts || [];
+
+  return (
+    <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+            {section.title}
+          </h2>
+          {section.subtitle ? (
+            <div className="mt-1 text-xs text-slate-400">{section.subtitle}</div>
+          ) : null}
+        </div>
+
+        {section.downloadUrl ? (
+          <a
+            href={section.downloadUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 transition hover:bg-cyan-500/20"
+          >
+            Télécharger
+          </a>
+        ) : null}
+      </div>
+
+      {cards.length > 0 ? (
+        <div className="mb-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {cards.map((card, index) => (
+            <UserStatsGraphMetricCard
+              key={`${section.key}-metric-${index}`}
+              card={card}
+            />
+          ))}
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+        {charts.map((chart, index) => (
+          <UserStatsChartCard
+            key={`${section.key}-chart-${index}`}
+            chart={chart}
+            graphKey={`${section.key}-${index}`}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function ActivityDisplay() {
   const [clock, setClock] = useState("");
   const [activeSidebar, setActiveSidebar] = useState("reports");
@@ -577,6 +892,7 @@ export default function ActivityDisplay() {
   const [userStatsData, setUserStatsData] = useState(null);
 
   const isUserStatsView = activeReportLink.startsWith("user-stats-");
+  const isUserStatsGraphView = USER_STATS_GRAPH_LINKS.has(activeReportLink);
   const [dashboardData, setDashboardData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -943,6 +1259,12 @@ export default function ActivityDisplay() {
     return userStatsData.sections?.[bucket] || [];
   }, [activeReportLink, userStatsData]);
 
+  const visibleUserStatsGraphs = useMemo(() => {
+    if (!userStatsData) return [];
+    const bucket = userStatsSectionByLink[activeReportLink] || "overview";
+    return userStatsData.graphs?.[bucket] || [];
+  }, [activeReportLink, userStatsData]);
+
   const reportTitle = useMemo(() => {
       if (activeReportLink === "summary") return "Rapport principal en temps réel";
       if (activeReportLink === "live-board") return "Rapport principal en temps réel // Graphes Standards";
@@ -956,6 +1278,21 @@ export default function ActivityDisplay() {
       if (activeReportLink === "user-stats-activity") return "User Stats // Activité agent";
       if (activeReportLink === "user-stats-recordings") return "User Stats // Enregistrements";
       if (activeReportLink === "user-stats-leads") return "User Stats // Leads & recherches";
+      if (activeReportLink === "user-stats-overview-graph") {
+        return "User Stats // Synthèse & connexions - Graph";
+      }
+      if (activeReportLink === "user-stats-calls-graph") {
+        return "User Stats // Appels & emails - Graph";
+      }
+      if (activeReportLink === "user-stats-activity-graph") {
+        return "User Stats // Activité agent - Graph";
+      }
+      if (activeReportLink === "user-stats-recordings-graph") {
+        return "User Stats // Enregistrements - Graph";
+      }
+      if (activeReportLink === "user-stats-leads-graph") {
+        return "User Stats // Leads & recherches - Graph";
+      }
       return `Rapport principal en temps réel // ${activeReportLink.replaceAll("-", " ")}`;
     }, [activeReportLink]);
 
@@ -1362,7 +1699,7 @@ export default function ActivityDisplay() {
         </header>
 
         <div className="flex min-h-0 flex-1">
-          <aside className="w-[240px] shrink-0 border-r border-cyan-500/20 bg-slate-950/80 p-4 backdrop-blur-xl">
+          <aside className="w-[240px] shrink-0 overflow-y-auto border-r border-cyan-500/20 bg-slate-950/80 p-4 backdrop-blur-xl">
             <div className="mb-4 font-mono text-[10px] uppercase tracking-[0.35em] text-slate-500">
               Navigation
             </div>
@@ -1398,7 +1735,7 @@ export default function ActivityDisplay() {
               })}
             </div>
 
-            <div className="mt-8 space-y-3">
+            <div className="mt-4 space-y-3 pb-6">
               <SidebarAccordionSection
                 title="Rapports"
                 items={reportNavItems}
@@ -1448,7 +1785,9 @@ export default function ActivityDisplay() {
                           {reportTitle}
                         </h1>
                         <div className="mt-1 text-sm text-slate-400">
-                          Exploitation structurée de user_stats.php
+                          {isUserStatsGraphView
+                            ? "Visualisation graphique dérivée de user_stats.php"
+                            : "Exploitation structurée de user_stats.php"}
                         </div>
                       </div>
 
@@ -1461,7 +1800,9 @@ export default function ActivityDisplay() {
 
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
                       <label className="space-y-2">
-                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">Utilisateur</span>
+                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                          Utilisateur
+                        </span>
                         <input
                           className="w-full rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none"
                           value={userStatsFilters.user}
@@ -1472,7 +1813,9 @@ export default function ActivityDisplay() {
                       </label>
 
                       <label className="space-y-2">
-                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">Date début</span>
+                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                          Date début
+                        </span>
                         <input
                           type="date"
                           className="w-full rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none"
@@ -1484,7 +1827,9 @@ export default function ActivityDisplay() {
                       </label>
 
                       <label className="space-y-2">
-                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">Date fin</span>
+                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                          Date fin
+                        </span>
                         <input
                           type="date"
                           className="w-full rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none"
@@ -1496,7 +1841,9 @@ export default function ActivityDisplay() {
                       </label>
 
                       <label className="space-y-2">
-                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">Call status</span>
+                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                          Call status
+                        </span>
                         <input
                           className="w-full rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none"
                           value={userStatsFilters.callStatus}
@@ -1537,6 +1884,10 @@ export default function ActivityDisplay() {
                         Chargement de User Stats...
                       </div>
                     </section>
+                  ) : isUserStatsGraphView ? (
+                    visibleUserStatsGraphs.map((section) => (
+                      <UserStatsGraphCard key={section.key} section={section} />
+                    ))
                   ) : (
                     visibleUserStatsSections.map((section) => (
                       <UserStatsTableCard key={section.key} section={section} />
