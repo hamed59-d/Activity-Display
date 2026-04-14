@@ -739,6 +739,172 @@ function absolutizeVicidialAssetPaths(html) {
   );
 }
 
+const USER_STATS_TABLES = [
+  { key: "talk_time_status", bucket: "overview", title: "Agent Talk Time and Status:" },
+  { key: "login_logout", bucket: "overview", title: "Agent Login and Logout Time:" },
+  { key: "web_logins", bucket: "overview", title: "Agent Webserver and URL Logins:" },
+  { key: "timeclock", bucket: "overview", title: "Timeclock Login and Logout Time:" },
+  { key: "closer_ingroup", bucket: "overview", title: "Closer In-Group Selection Logs:" },
+
+  { key: "outbound_calls", bucket: "calls", title: "Outbound Calls for this Time Period:" },
+  { key: "outbound_emails", bucket: "calls", title: "Outbound Emails for this Time Period:" },
+  { key: "inbound_closer_calls", bucket: "calls", title: "Inbound Closer Calls for this Time Period:" },
+  { key: "manual_outbound_calls", bucket: "calls", title: "Manual Outbound Calls for this Time Period:" },
+
+  { key: "agent_activity", bucket: "activity", title: "Agent Activity for this time period:" },
+  { key: "manager_pause_approvals", bucket: "activity", title: "Manager Pause Code Approvals for this Time Period:" },
+
+  { key: "recordings", bucket: "recordings", title: "Recordings for this Time Period:" },
+
+  { key: "lead_searches", bucket: "leads", title: "Lead Searches for this Time Period:" },
+  { key: "preview_lead_skips", bucket: "leads", title: "Preview Lead Skips for this Time Period:" },
+  { key: "agent_lead_switches", bucket: "leads", title: "Agent Lead Switches for this Time Period:" },
+];
+
+function escapeRegExp(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeTableCell(value = "") {
+  return cleanText(String(value || "")).replace(/\s+/g, " ").trim();
+}
+
+function parseUserStatsTable(htmlFragment) {
+  const $ = cheerio.load(`<table>${htmlFragment}</table>`);
+  const rows = [];
+
+  $("tr").each((_, tr) => {
+    const cells = [];
+    $(tr)
+      .find("td,th")
+      .each((__, cell) => {
+        cells.push(normalizeTableCell($(cell).text()));
+      });
+
+    if (cells.some((cell) => cell !== "")) {
+      rows.push(cells);
+    }
+  });
+
+  if (!rows.length) {
+    return { columns: [], rows: [], rowCount: 0 };
+  }
+
+  const [columns, ...body] = rows;
+
+  return {
+    columns,
+    rows: body,
+    rowCount: body.length,
+  };
+}
+
+function parseUserStatsHtml(html, context = {}) {
+  const htmlWithAssets = absolutizeVicidialAssetPaths(html);
+
+  const meta = {
+    user: context.user || "",
+    beginDate:
+      htmlWithAssets.match(/name=begin_date value="([^"]+)"/i)?.[1] || context.beginDate || "",
+    endDate:
+      htmlWithAssets.match(/name=end_date value="([^"]+)"/i)?.[1] || context.endDate || "",
+    callStatus:
+      htmlWithAssets.match(/name=call_status[^>]*value="([^"]*)"/i)?.[1] || context.callStatus || "",
+    searchArchived:
+      /name=['"]search_archived_data['"][^>]*checked/i.test(htmlWithAssets) ||
+      Boolean(context.searchArchived),
+    fetchedAt: new Date().toISOString(),
+  };
+
+  const sections = {
+    overview: [],
+    calls: [],
+    activity: [],
+    recordings: [],
+    leads: [],
+  };
+
+  for (const def of USER_STATS_TABLES) {
+    const blockRegex = new RegExp(
+      `${escapeRegExp(def.title)}[\\s\\S]*?<TABLE[^>]*>([\\s\\S]*?)<\\/TABLE>`,
+      "i"
+    );
+
+    const match = htmlWithAssets.match(blockRegex);
+    if (!match) continue;
+
+    const downloadMatch = match[0].match(/href=['"]([^'"]*file_download=\d+)['"]/i);
+    const parsed = parseUserStatsTable(match[1]);
+
+    sections[def.bucket].push({
+      key: def.key,
+      title: def.title.replace(/:$/, ""),
+      downloadUrl: downloadMatch
+        ? new URL(downloadMatch[1], `${VICIDIAL_BASE_URL}/`).toString()
+        : null,
+      ...parsed,
+    });
+  }
+
+  return { meta, sections };
+}
+
+async function fetchVicidialUserStatsHtml({
+  user,
+  beginDate,
+  endDate,
+  callStatus = "",
+  searchArchived = false,
+}) {
+  if (!VICIDIAL_BASE_URL || !VICIDIAL_USERNAME || !VICIDIAL_PASSWORD) {
+    throw new Error("Missing VICIDIAL_BASE_URL, VICIDIAL_USERNAME, or VICIDIAL_PASSWORD in .env");
+  }
+
+  const url = `${VICIDIAL_BASE_URL}/user_stats.php`;
+
+  const response = await axios.get(url, {
+    timeout: 30000,
+    responseType: "text",
+    headers: {
+      "User-Agent": "Mozilla/5.0 Activity-Display-Backend",
+      Accept: "text/html, */*; q=0.01",
+      Referer: `${VICIDIAL_BASE_URL}/user_stats.php?user=${encodeURIComponent(user)}`,
+    },
+    params: {
+      DB: "0",
+      pause_code_rpt: "",
+      park_rpt: "",
+      did_id: "",
+      did: "",
+      begin_date: beginDate,
+      end_date: endDate,
+      user,
+      call_status: callStatus,
+      search_archived_data: searchArchived ? "checked" : "",
+      NVAuser: "",
+      submit: "submit",
+    },
+    auth: {
+      username: VICIDIAL_USERNAME,
+      password: VICIDIAL_PASSWORD,
+    },
+    httpsAgent: new https.Agent({
+      rejectUnauthorized: false,
+    }),
+    validateStatus: () => true,
+  });
+
+  if (response.status >= 400) {
+    throw new Error(`HTTP ${response.status}: ${String(response.data).slice(0, 800)}`);
+  }
+
+  if (typeof response.data !== "string" || !response.data.trim()) {
+    throw new Error("Empty HTML response from user_stats.php");
+  }
+
+  return response.data;
+}
+
 async function fetchVicidialHtml() {
   if (!VICIDIAL_BASE_URL || !VICIDIAL_USERNAME || !VICIDIAL_PASSWORD) {
     throw new Error("Missing VICIDIAL_BASE_URL, VICIDIAL_USERNAME, or VICIDIAL_PASSWORD in .env");
@@ -1259,6 +1425,45 @@ app.get("/api/activity-display/rdv-analytics", async (req, res) => {
   } catch (error) {
     res.status(500).json({
       error: "Failed to build RDV analytics",
+      details: error.message,
+    });
+  }
+});
+
+app.get("/api/activity-display/user-stats", async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const user = String(req.query.user || "8105").trim();
+    const beginDate = String(req.query.beginDate || today).trim();
+    const endDate = String(req.query.endDate || beginDate).trim();
+    const callStatus = String(req.query.callStatus || "").trim();
+
+    const searchArchived = ["1", "true", "checked", "yes"].includes(
+      String(req.query.searchArchived || "").trim().toLowerCase()
+    );
+
+    const html = await fetchVicidialUserStatsHtml({
+      user,
+      beginDate,
+      endDate,
+      callStatus,
+      searchArchived,
+    });
+
+    const payload = parseUserStatsHtml(html, {
+      user,
+      beginDate,
+      endDate,
+      callStatus,
+      searchArchived,
+    });
+
+    res.set("Cache-Control", "no-store");
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({
+      error: "Failed to build user stats",
       details: error.message,
     });
   }

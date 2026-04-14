@@ -101,6 +101,40 @@ const sidebarItems = [
   { key: "reports", label: "Rapports", icon: BarChart3 },
 ];
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
+
+const reportNavItems = [
+  { key: "summary", label: "Résumé du rapport principal", icon: BarChart3 },
+  { key: "live-board", label: "Graphes Standards", icon: TrendingUp },
+  { key: "pauses", label: "Pauses", icon: ShieldCheck },
+  { key: "calls-volume", label: "Appels", icon: PhoneCall },
+  { key: "rdv", label: "RDV", icon: Clock3 },
+  { key: "agents-table", label: "Temps d'appel des agents", icon: Headphones },
+  { key: "dashboards", label: "Tableaux de bord", icon: BookOpenText },
+];
+
+const userStatsNavItems = [
+  { key: "user-stats-overview", label: "Synthèse & connexions", icon: RadioTower },
+  { key: "user-stats-calls", label: "Appels & emails", icon: PhoneCall },
+  { key: "user-stats-activity", label: "Activité agent", icon: Waves },
+  { key: "user-stats-recordings", label: "Enregistrements", icon: Voicemail },
+  { key: "user-stats-leads", label: "Leads & recherches", icon: BookOpenText },
+];
+
+const userStatsSectionByLink = {
+  "user-stats-overview": "overview",
+  "user-stats-calls": "calls",
+  "user-stats-activity": "activity",
+  "user-stats-recordings": "recordings",
+  "user-stats-leads": "leads",
+};
+
+function getTodayInputDate() {
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
 function toneClasses(tone) {
   const map = {
     cyan: "from-cyan-500/20 to-cyan-400/5 border-cyan-400/30 shadow-cyan-500/10",
@@ -391,10 +425,158 @@ function ChartHeader({ icon: Icon, title, printTargetId, printTitle }) {
   );
 }
 
+function SidebarAccordionSection({ title, items, activeKey, expanded, onToggle, onSelect }) {
+  return (
+    <div className="rounded-3xl border border-cyan-500/15 bg-slate-900/70 p-4">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-3"
+      >
+        <div className="font-mono text-[10px] uppercase tracking-[0.32em] text-slate-500">
+          {title}
+        </div>
+        <ChevronRight
+          className={`h-4 w-4 text-slate-400 transition ${
+            expanded ? "rotate-90 text-cyan-300" : ""
+          }`}
+        />
+      </button>
+
+      {expanded && (
+        <div className="mt-3 space-y-2 text-sm">
+          {items.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeKey === item.key;
+
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => onSelect(item.key)}
+                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left ${
+                  isActive
+                    ? "bg-cyan-400/10 text-cyan-200"
+                    : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
+                }`}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className="flex-1">{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserStatsTableCard({ section }) {
+  if (!section) return null;
+
+  const columns = section.columns || [];
+  const rows = section.rows || [];
+
+  return (
+    <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+            {section.title}
+          </h2>
+          {section.rowCount != null && (
+            <div className="mt-1 text-xs text-slate-400">
+              {section.rowCount} ligne(s)
+            </div>
+          )}
+        </div>
+
+        {section.downloadUrl ? (
+          <a
+            href={section.downloadUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 transition hover:bg-cyan-500/20"
+          >
+            Télécharger
+          </a>
+        ) : null}
+      </div>
+
+      <div className="overflow-auto rounded-2xl border border-white/5">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-900/90">
+            <tr>
+              {columns.map((column, index) => (
+                <th
+                  key={`${section.key}-col-${index}`}
+                  className="whitespace-nowrap border-b border-white/5 px-3 py-2 text-left font-mono text-[11px] uppercase tracking-[0.18em] text-slate-300"
+                >
+                  {column || "-"}
+                </th>
+              ))}
+            </tr>
+          </thead>
+
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={Math.max(columns.length, 1)}
+                  className="px-3 py-4 text-sm text-slate-500"
+                >
+                  Aucune donnée sur cette plage.
+                </td>
+              </tr>
+            ) : (
+              rows.map((row, rowIndex) => (
+                <tr
+                  key={`${section.key}-row-${rowIndex}`}
+                  className="border-b border-white/5 last:border-b-0"
+                >
+                  {row.map((cell, cellIndex) => (
+                    <td
+                      key={`${section.key}-cell-${rowIndex}-${cellIndex}`}
+                      className="whitespace-nowrap px-3 py-2 text-slate-200"
+                    >
+                      {cell || "-"}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 export default function ActivityDisplay() {
   const [clock, setClock] = useState("");
   const [activeSidebar, setActiveSidebar] = useState("reports");
   const [activeReportLink, setActiveReportLink] = useState("summary");
+  const [expandedMenus, setExpandedMenus] = useState({
+    reports: true,
+    userStats: true,
+  });
+
+  const [userStatsFilters, setUserStatsFilters] = useState(() => {
+    const today = getTodayInputDate();
+    return {
+      user: "8105",
+      beginDate: today,
+      endDate: today,
+      callStatus: "",
+      searchArchived: false,
+    };
+  });
+
+  const [userStatsLoading, setUserStatsLoading] = useState(false);
+  const [userStatsError, setUserStatsError] = useState("");
+  const [userStatsData, setUserStatsData] = useState(null);
+
+  const isUserStatsView = activeReportLink.startsWith("user-stats-");
   const [dashboardData, setDashboardData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -570,7 +752,7 @@ export default function ActivityDisplay() {
 
       const loadRdvAnalytics = async () => {
         try {
-          const url = new URL("http://localhost:3001/api/activity-display/rdv-analytics");
+          const url = new URL(`${API_BASE_URL}/api/activity-display/rdv-analytics`);
           url.searchParams.set("mode", graphMode);
           url.searchParams.set("start", graphStart);
           url.searchParams.set("end", graphEnd);
@@ -613,41 +795,47 @@ export default function ActivityDisplay() {
 
 
   useEffect(() => {
-    let mounted = true;
+  if (isUserStatsView) {
+    setLoading(false);
+    setIsRefreshing(false);
+    return;
+  }
 
-    const loadData = async (initialLoad = false) => {
-      try {
-        if (initialLoad) {
-          setLoading(true);
-        } else {
-          setIsRefreshing(true);
-        }
+  let mounted = true;
 
-        const data = await fetchActivityDisplayData();
-        if (!mounted) return;
-
-        setDashboardData(data);
-        setError("");
-      } catch (err) {
-        if (!mounted) return;
-        setError("Échec de l'actualisation des données en direct.");
-        console.error(err);
-      } finally {
-        if (!mounted) return;
-        setLoading(false);
-        setIsRefreshing(false);
+  const loadData = async (initialLoad = false) => {
+    try {
+      if (initialLoad) {
+        setLoading(true);
+      } else {
+        setIsRefreshing(true);
       }
-    };
 
-    loadData(true);
-    const refreshMs = activeReportLink === "live-board" ? 5000 : 1000;
-    const interval = setInterval(() => loadData(false), refreshMs);
+      const data = await fetchActivityDisplayData();
+      if (!mounted) return;
 
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [activeReportLink]);
+      setDashboardData(data);
+      setError("");
+    } catch (err) {
+      if (!mounted) return;
+      setError("Échec de l'actualisation des données en direct.");
+      console.error(err);
+    } finally {
+      if (!mounted) return;
+      setLoading(false);
+      setIsRefreshing(false);
+    }
+  };
+
+  loadData(true);
+  const refreshMs = activeReportLink === "live-board" ? 5000 : 1000;
+  const interval = setInterval(() => loadData(false), refreshMs);
+
+  return () => {
+    mounted = false;
+    clearInterval(interval);
+  };
+}, [activeReportLink, isUserStatsView]);
 
   useEffect(() => {
     if (activeReportLink !== "pauses") return;
@@ -656,7 +844,7 @@ export default function ActivityDisplay() {
 
     const loadPauseHistory = async () => {
       try {
-        const url = new URL("http://localhost:3001/api/activity-display/pause-history");
+        const url = new URL(`${API_BASE_URL}/api/activity-display/pause-history`);
         url.searchParams.set("mode", graphMode);
         url.searchParams.set("start", graphStart);
         url.searchParams.set("end", graphEnd);
@@ -705,7 +893,7 @@ export default function ActivityDisplay() {
 
     const loadAgentCallsTable = async () => {
       try {
-        const url = new URL("http://localhost:3001/api/activity-display/agent-calls-at-time");
+        const url = new URL(`${API_BASE_URL}/api/activity-display/agent-calls-at-time`);
         url.searchParams.set("mode", agentCallsViewMode);
 
         if (agentCallsViewMode === "manual") {
@@ -749,6 +937,12 @@ export default function ActivityDisplay() {
     };
   }, [activeReportLink, agentCallsViewMode, agentCallsAt]);
 
+  const visibleUserStatsSections = useMemo(() => {
+    if (!userStatsData) return [];
+    const bucket = userStatsSectionByLink[activeReportLink] || "overview";
+    return userStatsData.sections?.[bucket] || [];
+  }, [activeReportLink, userStatsData]);
+
   const reportTitle = useMemo(() => {
       if (activeReportLink === "summary") return "Rapport principal en temps réel";
       if (activeReportLink === "live-board") return "Rapport principal en temps réel // Graphes Standards";
@@ -757,6 +951,11 @@ export default function ActivityDisplay() {
       if (activeReportLink === "rdv") return "Rapport principal // RDV";
       if (activeReportLink === "agents-table") return "Rapport principal en temps réel // Temps d'appel des agents";
       if (activeReportLink === "dashboards") return "Tableaux de bord // Analytique des rapports";
+      if (activeReportLink === "user-stats-overview") return "User Stats // Synthèse & connexions";
+      if (activeReportLink === "user-stats-calls") return "User Stats // Appels & emails";
+      if (activeReportLink === "user-stats-activity") return "User Stats // Activité agent";
+      if (activeReportLink === "user-stats-recordings") return "User Stats // Enregistrements";
+      if (activeReportLink === "user-stats-leads") return "User Stats // Leads & recherches";
       return `Rapport principal en temps réel // ${activeReportLink.replaceAll("-", " ")}`;
     }, [activeReportLink]);
 
@@ -1051,6 +1250,66 @@ export default function ActivityDisplay() {
     return (historyData || []).reduce((sum, row) => sum + (Number(row.totalCalls) || 0), 0);
   }, [historyData]);
 
+  useEffect(() => {
+  if (!isUserStatsView) return;
+
+  let cancelled = false;
+
+  const loadUserStats = async () => {
+    try {
+      setUserStatsLoading(true);
+      setUserStatsError("");
+
+      const url = new URL(`${API_BASE_URL}/api/activity-display/user-stats`);
+      url.searchParams.set("user", userStatsFilters.user.trim() || "8105");
+      url.searchParams.set("beginDate", userStatsFilters.beginDate);
+      url.searchParams.set("endDate", userStatsFilters.endDate);
+
+      if (userStatsFilters.callStatus.trim()) {
+        url.searchParams.set("callStatus", userStatsFilters.callStatus.trim());
+      }
+
+      if (userStatsFilters.searchArchived) {
+        url.searchParams.set("searchArchived", "1");
+      }
+
+      const response = await fetch(url.toString(), { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`User stats backend error: ${response.status}`);
+      }
+
+      const result = await response.json();
+      if (!cancelled) {
+        setUserStatsData(result);
+      }
+    } catch (err) {
+      if (!cancelled) {
+        console.error(err);
+        setUserStatsData(null);
+        setUserStatsError("Impossible de charger User Stats.");
+      }
+    } finally {
+      if (!cancelled) {
+        setUserStatsLoading(false);
+      }
+    }
+  };
+
+  loadUserStats();
+
+  return () => {
+    cancelled = true;
+  };
+}, [
+  isUserStatsView,
+  activeReportLink,
+  userStatsFilters.user,
+  userStatsFilters.beginDate,
+  userStatsFilters.endDate,
+  userStatsFilters.callStatus,
+  userStatsFilters.searchArchived,
+]);
+
 
   return (
     <div className="min-h-screen overflow-hidden bg-[#050912] text-slate-100">
@@ -1139,89 +1398,28 @@ export default function ActivityDisplay() {
               })}
             </div>
 
-            <div className="mt-8 rounded-3xl border border-cyan-500/15 bg-slate-900/70 p-4">
-              <div className="font-mono text-[10px] uppercase tracking-[0.32em] text-slate-500">
-                Rapports
-              </div>
+            <div className="mt-8 space-y-3">
+              <SidebarAccordionSection
+                title="Rapports"
+                items={reportNavItems}
+                activeKey={activeReportLink}
+                expanded={expandedMenus.reports}
+                onToggle={() =>
+                  setExpandedMenus((prev) => ({ ...prev, reports: !prev.reports }))
+                }
+                onSelect={setActiveReportLink}
+              />
 
-              <div className="mt-3 space-y-2 text-sm">
-                <button
-                  onClick={() => setActiveReportLink("summary")}
-                  className={`block w-full rounded-xl px-3 py-2 text-left ${
-                    activeReportLink === "summary"
-                      ? "bg-cyan-400/10 text-cyan-200"
-                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
-                  }`}
-                >
-                  Résumé du rapport principal
-                </button>
-
-                <button
-                  onClick={() => setActiveReportLink("live-board")}
-                  className={`block w-full rounded-xl px-3 py-2 text-left ${
-                    activeReportLink === "live-board"
-                      ? "bg-cyan-400/10 text-cyan-200"
-                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
-                  }`}
-                >
-                  Graphes Standards
-                </button>
-
-                <button
-                  onClick={() => setActiveReportLink("pauses")}
-                  className={`block w-full rounded-xl px-3 py-2 text-left ${
-                    activeReportLink === "pauses"
-                      ? "bg-cyan-400/10 text-cyan-200"
-                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
-                  }`}
-                >
-                  Pauses
-                </button>
-
-                <button
-                  onClick={() => setActiveReportLink("calls-volume")}
-                  className={`block w-full rounded-xl px-3 py-2 text-left ${
-                    activeReportLink === "calls-volume"
-                      ? "bg-cyan-400/10 text-cyan-200"
-                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
-                  }`}
-                >
-                  Appels
-                </button>
-
-                <button
-                  onClick={() => setActiveReportLink("rdv")}
-                  className={`block w-full rounded-xl px-3 py-2 text-left ${
-                    activeReportLink === "rdv"
-                      ? "bg-cyan-400/10 text-cyan-200"
-                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
-                  }`}
-                >
-                  RDV
-                </button>
-
-                <button
-                  onClick={() => setActiveReportLink("agents-table")}
-                  className={`block w-full rounded-xl px-3 py-2 text-left ${
-                    activeReportLink === "agents-table"
-                      ? "bg-cyan-400/10 text-cyan-200"
-                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
-                  }`}
-                >
-                  Temps d'appel des agents
-                </button>
-
-                <button
-                  onClick={() => setActiveReportLink("dashboards")}
-                  className={`block w-full rounded-xl px-3 py-2 text-left ${
-                    activeReportLink === "dashboards"
-                      ? "bg-cyan-400/10 text-cyan-200"
-                      : "text-slate-400 hover:bg-white/[0.03] hover:text-slate-100"
-                  }`}
-                >
-                  Tableaux de bord
-                </button>
-              </div>
+              <SidebarAccordionSection
+                title="User Stats"
+                items={userStatsNavItems}
+                activeKey={activeReportLink}
+                expanded={expandedMenus.userStats}
+                onToggle={() =>
+                  setExpandedMenus((prev) => ({ ...prev, userStats: !prev.userStats }))
+                }
+                onSelect={setActiveReportLink}
+              />
             </div>
           </aside>
 
@@ -1238,6 +1436,112 @@ export default function ActivityDisplay() {
               {error && (
                 <section className="rounded-[28px] border border-red-500/30 bg-red-500/10 p-4 text-red-200">
                   {error}
+                </section>
+              )}
+
+              {isUserStatsView && (
+                <section className="space-y-5">
+                  <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                    <div className="mb-5 flex items-center justify-between gap-3">
+                      <div>
+                        <h1 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
+                          {reportTitle}
+                        </h1>
+                        <div className="mt-1 text-sm text-slate-400">
+                          Exploitation structurée de user_stats.php
+                        </div>
+                      </div>
+
+                      {userStatsData?.meta?.fetchedAt ? (
+                        <div className="text-xs text-slate-500">
+                          Relevé utilisé : {userStatsData.meta.fetchedAt}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+                      <label className="space-y-2">
+                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">Utilisateur</span>
+                        <input
+                          className="w-full rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none"
+                          value={userStatsFilters.user}
+                          onChange={(e) =>
+                            setUserStatsFilters((prev) => ({ ...prev, user: e.target.value }))
+                          }
+                        />
+                      </label>
+
+                      <label className="space-y-2">
+                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">Date début</span>
+                        <input
+                          type="date"
+                          className="w-full rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none"
+                          value={userStatsFilters.beginDate}
+                          onChange={(e) =>
+                            setUserStatsFilters((prev) => ({ ...prev, beginDate: e.target.value }))
+                          }
+                        />
+                      </label>
+
+                      <label className="space-y-2">
+                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">Date fin</span>
+                        <input
+                          type="date"
+                          className="w-full rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none"
+                          value={userStatsFilters.endDate}
+                          onChange={(e) =>
+                            setUserStatsFilters((prev) => ({ ...prev, endDate: e.target.value }))
+                          }
+                        />
+                      </label>
+
+                      <label className="space-y-2">
+                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">Call status</span>
+                        <input
+                          className="w-full rounded-xl border border-cyan-500/20 bg-slate-900/80 px-3 py-2 text-slate-100 outline-none"
+                          value={userStatsFilters.callStatus}
+                          onChange={(e) =>
+                            setUserStatsFilters((prev) => ({
+                              ...prev,
+                              callStatus: e.target.value.toUpperCase(),
+                            }))
+                          }
+                        />
+                      </label>
+
+                      <label className="flex items-end gap-3 rounded-xl border border-cyan-500/20 bg-slate-900/50 px-3 py-2 text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={userStatsFilters.searchArchived}
+                          onChange={(e) =>
+                            setUserStatsFilters((prev) => ({
+                              ...prev,
+                              searchArchived: e.target.checked,
+                            }))
+                          }
+                        />
+                        Rechercher dans les archives
+                      </label>
+                    </div>
+                  </section>
+
+                  {userStatsError ? (
+                    <section className="rounded-[28px] border border-rose-500/20 bg-rose-500/10 p-5 text-rose-200">
+                      {userStatsError}
+                    </section>
+                  ) : null}
+
+                  {userStatsLoading ? (
+                    <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-8 text-center backdrop-blur-xl">
+                      <div className="font-mono text-sm uppercase tracking-[0.25em] text-cyan-300">
+                        Chargement de User Stats...
+                      </div>
+                    </section>
+                  ) : (
+                    visibleUserStatsSections.map((section) => (
+                      <UserStatsTableCard key={section.key} section={section} />
+                    ))
+                  )}
                 </section>
               )}
 
