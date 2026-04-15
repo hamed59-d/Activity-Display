@@ -1681,6 +1681,324 @@ async function fetchVicidialUserStatsHtml({
   return response.data;
 }
 
+async function fetchVicidialCampaignsHtml({ status = "" } = {}) {
+  if (!VICIDIAL_BASE_URL || !VICIDIAL_USERNAME || !VICIDIAL_PASSWORD) {
+    throw new Error("Missing VICIDIAL_BASE_URL, VICIDIAL_USERNAME, or VICIDIAL_PASSWORD in .env");
+  }
+
+  const url = `${VICIDIAL_BASE_URL}/admin.php`;
+  const response = await axios.get(url, {
+    timeout: 30000,
+    responseType: "text",
+    headers: {
+      "User-Agent": "Mozilla/5.0 Activity-Display-Backend",
+      Accept: "text/html, */*; q=0.01",
+    },
+    params: {
+      ADD: "10",
+      ...(status ? { status } : {}),
+    },
+    auth: {
+      username: VICIDIAL_USERNAME,
+      password: VICIDIAL_PASSWORD,
+    },
+    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+    validateStatus: () => true,
+  });
+
+  if (response.status >= 400) {
+    throw new Error(`HTTP ${response.status}: ${String(response.data).slice(0, 400)}`);
+  }
+  if (typeof response.data !== "string" || !response.data.trim()) {
+    throw new Error("Empty HTML response from admin.php campaigns");
+  }
+  return response.data;
+}
+
+async function fetchVicidialCampaignDetailHtml(campaignId) {
+  if (!VICIDIAL_BASE_URL || !VICIDIAL_USERNAME || !VICIDIAL_PASSWORD) {
+    throw new Error("Missing VICIDIAL_* env vars");
+  }
+
+  const url = `${VICIDIAL_BASE_URL}/admin.php`;
+  const response = await axios.get(url, {
+    timeout: 30000,
+    responseType: "text",
+    headers: {
+      "User-Agent": "Mozilla/5.0 Activity-Display-Backend",
+      Accept: "text/html, */*; q=0.01",
+    },
+    params: {
+      ADD: "31",
+      campaign_id: campaignId,
+    },
+    auth: {
+      username: VICIDIAL_USERNAME,
+      password: VICIDIAL_PASSWORD,
+    },
+    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+    validateStatus: () => true,
+  });
+
+  if (response.status >= 400) {
+    throw new Error(`HTTP ${response.status}: ${String(response.data).slice(0, 400)}`);
+  }
+  if (typeof response.data !== "string" || !response.data.trim()) {
+    throw new Error("Empty HTML response for campaign detail");
+  }
+  return response.data;
+}
+
+
+
+function parseCampaignsHtml(html) {
+  const campaigns = [];
+
+  // Rows are marked with class records_list_x / records_list_y
+  const rowRegex = /<tr[^>]+class="records_list_[xy]"[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch;
+
+  while ((rowMatch = rowRegex.exec(html)) !== null) {
+    const cells = [];
+    const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    let cellMatch;
+    let cellHtml = rowMatch[1];
+
+    while ((cellMatch = cellRegex.exec(cellHtml)) !== null) {
+      // Strip tags, collapse whitespace
+      const text = cellMatch[1]
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      cells.push(text);
+    }
+
+    if (cells.length >= 9) {
+      campaigns.push({
+        campaignId:   cells[0] || "",
+        name:         cells[1] || "",
+        active:       cells[2] || "",
+        group:        cells[3] || "",
+        dialMethod:   cells[4] || "",
+        level:        cells[5] || "",
+        leadOrder:    cells[6] || "",
+        dialStatuses: cells[7] || "",
+        dp:           cells[8] || "",
+      });
+    }
+  }
+
+  return campaigns;
+}
+
+function parseCampaignDetailHtml(html) {
+  const $ = cheerio.load(html);
+  const detail = {};
+
+  // Find the main content table – typically the second or third table after the header.
+  // We'll look for a table that contains "Campaign ID:" text.
+  const tables = $("table").toArray();
+  let detailTable = null;
+  for (const table of tables) {
+    const text = $(table).text();
+    if (text.includes("Campaign ID:") && text.includes("Campaign Name:")) {
+      detailTable = table;
+      break;
+    }
+  }
+
+  if (!detailTable) {
+    throw new Error("Could not locate campaign detail table");
+  }
+
+  // Extract all rows with two cells (label and value)
+  $(detailTable).find("tr").each((_, tr) => {
+    const cells = $(tr).find("td");
+    if (cells.length === 2) {
+      const label = cleanText($(cells[0]).text()).replace(/:$/, "");
+      const value = cleanText($(cells[1]).text());
+      if (label) detail[label] = value;
+    }
+  });
+
+  // Also extract the dial statuses list (multi-select box)
+  const dialStatusSelect = $("select[name='dial_statuses[]']");
+  if (dialStatusSelect.length) {
+    const selectedOptions = [];
+    dialStatusSelect.find("option[selected]").each((_, opt) => {
+      selectedOptions.push(cleanText($(opt).text()));
+    });
+    detail.dialStatusesSelected = selectedOptions;
+  }
+
+  // Extract any additional fields you need (e.g., Park Music URL)
+  const parkMusicInput = $("input[name='park_music_on_hold']");
+  if (parkMusicInput.length) {
+    detail.parkMusicOnHold = parkMusicInput.val() || "";
+  }
+
+  // Extract "LISTS WITHIN THIS CAMPAIGN" table
+  const listTables = $("table").toArray().filter((table) => {
+    const text = $(table).text().toUpperCase();
+    return text.includes("LISTS WITHIN THIS CAMPAIGN") || 
+          (text.includes("LIST ID") && text.includes("LIST NAME"));
+  });
+
+  if (listTables.length > 0) {
+    const lists = [];
+    $(listTables[0]).find("tr").each((_, tr) => {
+      const cells = $(tr).find("td");
+      if (cells.length >= 4) {
+        const listId = cleanText($(cells[0]).text());
+        const listName = cleanText($(cells[1]).text());
+        const description = cleanText($(cells[2]).text());
+        const level = cleanText($(cells[3]).text());
+        if (listId && !listId.toUpperCase().includes("LIST ID")) {
+          lists.push({ listId, listName, description, level });
+        }
+      }
+    });
+    detail.lists = lists;
+  }
+
+  return detail;
+}
+
+// Add after fetchVicidialCampaignDetailHtml
+async function fetchVicidialListDetailHtml(listId) {
+  if (!VICIDIAL_BASE_URL || !VICIDIAL_USERNAME || !VICIDIAL_PASSWORD) {
+    throw new Error("Missing VICIDIAL_* env vars");
+  }
+
+  const url = `${VICIDIAL_BASE_URL}/admin.php`;
+  const response = await axios.get(url, {
+    timeout: 30000,
+    responseType: "text",
+    headers: {
+      "User-Agent": "Mozilla/5.0 Activity-Display-Backend",
+      Accept: "text/html, */*; q=0.01",
+    },
+    params: {
+      ADD: "311",          // Modify list record
+      list_id: listId,
+    },
+    auth: {
+      username: VICIDIAL_USERNAME,
+      password: VICIDIAL_PASSWORD,
+    },
+    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+    validateStatus: () => true,
+  });
+
+  if (response.status >= 400) {
+    throw new Error(`HTTP ${response.status}: ${String(response.data).slice(0, 400)}`);
+  }
+  if (typeof response.data !== "string" || !response.data.trim()) {
+    throw new Error("Empty HTML response for list detail");
+  }
+  return response.data;
+}
+
+function parseListDetailHtml(html) {
+  const $ = cheerio.load(html);
+  const result = {};
+
+  // Optional basic info
+  const listIdMatch = html.match(/MODIFY A LISTS RECORD:\s*(\d+)/i);
+  if (listIdMatch) result.listId = listIdMatch[1];
+
+  const listNameMatch = html.match(/List Name:.*?value="([^"]*)"/i);
+  if (listNameMatch) result.listName = listNameMatch[1];
+
+  const campaignMatch = html.match(/Campaign.*?<option[^>]*SELECTED[^>]*>([^<]+)</i);
+  if (campaignMatch) result.campaign = campaignMatch[1].trim();
+
+  // Helper to find a table by its preceding header text
+  const extractTableByHeader = (headerText) => {
+    // Find all elements containing the exact header text (case-insensitive)
+    const matchingElements = $('*').filter((_, el) => {
+      return $(el).text().trim().toUpperCase() === headerText.toUpperCase();
+    });
+
+    for (let i = 0; i < matchingElements.length; i++) {
+      const el = matchingElements[i];
+      // Look for the next table in the DOM tree
+      // First try to find a table that is a sibling after this element
+      let table = $(el).nextAll('table').first();
+      if (!table.length) {
+        // If not found, look for a table inside a parent's next siblings
+        table = $(el).parent().nextAll().find('table').first();
+      }
+      if (!table.length) {
+        // As a last resort, find the nearest table anywhere after this element
+        table = $(el).nextUntil('table').next('table').first();
+        if (!table.length) table = $(el).nextAll().find('table').first();
+      }
+      if (table.length) {
+        const rows = [];
+        table.find('tr').each((_, tr) => {
+          const cells = [];
+          $(tr).find('td, th').each((__, cell) => {
+            let text = $(cell).text().replace(/\s+/g, ' ').trim();
+            // Remove any HTML tags inside the text (like links)
+            text = text.replace(/<[^>]*>/g, '');
+            cells.push(text);
+          });
+          if (cells.length > 0) rows.push(cells);
+        });
+        return rows;
+      }
+    }
+    return null;
+  };
+
+  const headerMap = {
+    statuses: 'STATUSES WITHIN THIS LIST:',
+    timezones: 'TIME ZONES WITHIN THIS LIST:',
+    owners: 'OWNERS WITHIN THIS LIST:',
+    ranks: 'RANKS WITHIN THIS LIST:',
+    calledCounts: 'CALLED COUNTS WITHIN THIS LIST:',
+    todayCalledCounts: 'TODAY CALLED COUNTS FOR LEADS CALLED TODAY WITHIN THIS LIST:',
+    '24hrCalledCounts': '24-HOUR CALLED COUNTS FOR LEADS WITHIN THIS LIST:'
+  };
+
+  const tables = {};
+  for (const [key, header] of Object.entries(headerMap)) {
+    const data = extractTableByHeader(header);
+    if (data && data.length) {
+      tables[key] = data;
+    } else {
+      console.warn(`[list detail] Could not find table for: ${header}`);
+    }
+  }
+
+  // Add a fallback: if no tables found, try to find tables by their preceding <b> tags
+  if (Object.keys(tables).length === 0) {
+    console.warn('[list detail] Falling back to generic <b> + table search');
+    $('b').each((_, b) => {
+      const headerText = $(b).text().trim().toUpperCase();
+      if (headerText.includes('WITHIN THIS LIST')) {
+        const table = $(b).nextAll('table').first();
+        if (table.length) {
+          const rows = [];
+          table.find('tr').each((_, tr) => {
+            const cells = [];
+            $(tr).find('td, th').each((__, cell) => {
+              cells.push($(cell).text().replace(/\s+/g, ' ').trim());
+            });
+            if (cells.length) rows.push(cells);
+          });
+          const key = headerText.toLowerCase().replace(/[^a-z]/g, '');
+          tables[key] = rows;
+        }
+      }
+    });
+  }
+
+  return { ...result, tables };
+}
+
 async function fetchVicidialHtml() {
   if (!VICIDIAL_BASE_URL || !VICIDIAL_USERNAME || !VICIDIAL_PASSWORD) {
     throw new Error("Missing VICIDIAL_BASE_URL, VICIDIAL_USERNAME, or VICIDIAL_PASSWORD in .env");
@@ -2332,6 +2650,61 @@ app.get("/api/activity-display/pause-history", async (req, res) => {
   }
 });
 
+app.get("/api/activity-display/campaigns", async (req, res) => {
+  try {
+    const { status = "" } = req.query;
+    const html = await fetchVicidialCampaignsHtml({ status });
+    const campaigns = parseCampaignsHtml(html);
+    res.set("Cache-Control", "no-store");
+    res.json({ campaigns });
+  } catch (error) {
+    console.error("[campaigns]", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/activity-display/campaigns/:campaignId", async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    if (!campaignId) {
+      return res.status(400).json({ error: "campaignId is required" });
+    }
+
+    const html = await fetchVicidialCampaignDetailHtml(campaignId);
+    const detail = parseCampaignDetailHtml(html);
+
+    res.set("Cache-Control", "no-store");
+    res.json({ campaignId, ...detail });
+  } catch (error) {
+    console.error(`[campaign detail] ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/activity-display/lists/:listId", async (req, res) => {
+  try {
+    const { listId } = req.params;
+    if (!listId) {
+      return res.status(400).json({ error: "listId is required" });
+    }
+
+    const html = await fetchVicidialListDetailHtml(listId);
+    console.log(`[list detail] Fetched HTML for ${listId}, length: ${html.length}`);
+    
+    if (html.includes("Invalid list") || html.includes("does not exist") || html.includes("No such list")) {
+      console.error(`[list detail] List ${listId} appears invalid.`);
+      throw new Error("List not found or invalid list ID");
+    }
+
+    const detail = parseListDetailHtml(html);
+    res.set("Cache-Control", "no-store");
+    res.json({ listId, ...detail });
+  } catch (error) {
+    console.error(`[list detail] Error for ${req.params.listId}:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 async function bootstrap() {
   await initDatabase();
   await startCollector();
@@ -2365,3 +2738,4 @@ bootstrap().catch(async (error) => {
   } catch {}
   process.exit(1);
 });
+

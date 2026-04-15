@@ -8,6 +8,7 @@ import {
   Clock3,
   Headphones,
   Hourglass,
+  Megaphone,
   Phone,
   PhoneCall,
   Printer,
@@ -39,6 +40,9 @@ import {
   Area,
   AreaChart,
 } from "recharts";
+import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import html2canvas from "html2canvas";
 
 const reportOptions = [
   "Voir plus",
@@ -168,6 +172,17 @@ const userStatsNavItems = [
     icon: TrendingUp,
     indent: true,
   },
+];
+
+const campaignsNavItems = [
+  { key: "campaigns-main", label: "Campaigns Main", icon: Megaphone },
+];
+
+const campaignDetailTabs = [
+  { key: "basic", label: "Basic View" },
+  { key: "advanced", label: "Detail View" },
+  { key: "lists", label: "List Mix" },
+  { key: "statuses", label: "Dial Statuses" },
 ];
 
 const userStatsSectionByLink = {
@@ -408,88 +423,9 @@ function TopKpiStrip({ cards }) {
   );
 }
 
-async function printElementById(elementId, title = "Graphique") {
-  const element = document.getElementById(elementId);
-  if (!element) return;
 
-  const canvas = await html2canvas(element, {
-    backgroundColor: "#020617",
-    scale: 2,
-    useCORS: true,
-  });
 
-  const imageData = canvas.toDataURL("image/png");
 
-  const printWindow = window.open("", "_blank", "width=1200,height=900");
-  if (!printWindow) return;
-
-  printWindow.document.write(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>${title}</title>
-        <style>
-          body {
-            margin: 0;
-            padding: 24px;
-            font-family: Arial, sans-serif;
-            background: white;
-            color: black;
-          }
-          .title {
-            font-size: 20px;
-            margin-bottom: 16px;
-            font-weight: 600;
-          }
-          img {
-            width: 100%;
-            height: auto;
-            display: block;
-            border: 1px solid #ccc;
-          }
-          @page {
-            size: auto;
-            margin: 12mm;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="title">${title}</div>
-        <img src="${imageData}" alt="${title}" />
-        <script>
-          window.onload = () => {
-            window.focus();
-            window.print();
-          };
-        </script>
-      </body>
-    </html>
-  `);
-
-  printWindow.document.close();
-}
-
-function ChartHeader({ icon: Icon, title, printTargetId, printTitle }) {
-  return (
-    <div className="mb-4 flex items-center justify-between gap-3">
-      <div className="flex items-center gap-2">
-        {Icon ? <Icon className="h-5 w-5 text-cyan-300" /> : null}
-        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
-          {title}
-        </h2>
-      </div>
-
-      <button
-        type="button"
-        onClick={() => printElementById(printTargetId, printTitle || title)}
-        className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-2 transition hover:bg-cyan-500/20"
-        title="Imprimer ce graphique"
-      >
-        <Printer className="h-4 w-4 text-cyan-300" />
-      </button>
-    </div>
-  );
-}
 
 function SidebarAccordionSection({ title, items, activeKey, expanded, onToggle, onSelect }) {
   return (
@@ -813,46 +749,269 @@ function UserStatsChartCard({ chart, graphKey }) {
   );
 }
 
+function exportToStyledXLSX(data, filename, sheetName = "Data") {
+  if (!data.length) return;
+  const ws = XLSX.utils.json_to_sheet(data);
+  ws['!cols'] = Object.keys(data[0]).map(() => ({ wch: 20 }));
+  const wb = XLSX.utils.book_new();
+  const safeSheetName = sheetName.slice(0, 31); // Excel limit
+  XLSX.utils.book_append_sheet(wb, ws, safeSheetName);
+  XLSX.writeFile(wb, `${filename}.xlsx`);
+}
+
+// Helper: recursively replace oklab/oklch colors in all elements
+function replaceModernColors(element) {
+  // Inject a style sheet that overrides all colors with safe values
+  const style = document.createElement('style');
+  style.textContent = `
+    * {
+      color: #000000 !important;
+      background-color: #ffffff !important;
+      border-color: #cccccc !important;
+      outline-color: #cccccc !important;
+      text-decoration-color: #000000 !important;
+    }
+    svg, .recharts-wrapper, .recharts-surface {
+      background-color: white !important;
+    }
+    .recharts-bar-rectangle, .recharts-pie-sector {
+      fill: #22d3ee !important;
+      stroke: none !important;
+    }
+    .recharts-legend-item-text {
+      color: #000000 !important;
+    }
+  `;
+  element.appendChild(style);
+
+  // Also set inline styles as a fallback
+  const allElements = element.querySelectorAll('*');
+  allElements.forEach(el => {
+    el.style.color = '#000000';
+    el.style.backgroundColor = '#ffffff';
+    if (el.style.borderColor) el.style.borderColor = '#cccccc';
+    if (el.style.outlineColor) el.style.outlineColor = '#cccccc';
+  });
+}
+
+async function exportElementToPDF(elementId, filename) {
+  const element = document.getElementById(elementId);
+  if (!element) {
+    console.error(`Element with id ${elementId} not found`);
+    return;
+  }
+
+  // Clone and fix colors
+  const clone = element.cloneNode(true);
+  replaceModernColors(clone);
+
+  const container = document.createElement('div');
+  container.appendChild(clone);
+  container.style.padding = '20px';
+  container.style.backgroundColor = '#ffffff';
+  container.style.color = '#000000';
+  container.style.width = '100%';
+  container.style.display = 'block';
+
+  // Append to body so html2canvas can render it
+  document.body.appendChild(container);
+  await new Promise(resolve => setTimeout(resolve, 100)); // allow layout
+
+  try {
+    const canvas = await html2canvas(container, {
+      scale: 2,
+      backgroundColor: '#ffffff',
+      useCORS: true,
+      logging: false,
+    });
+    const imgData = canvas.toDataURL('image/png');
+
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const imgProps = pdf.getImageProperties(imgData);
+    const pdfWidth = pdf.internal.pageSize.getWidth();
+    const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+    pdf.save(`${filename}.pdf`);
+  } catch (err) {
+    console.error('PDF export failed:', err);
+    alert('Erreur lors de la génération du PDF. Veuillez réessayer.');
+  } finally {
+    document.body.removeChild(container);
+  }
+}
+
+async function printElementById(elementId, title = "Graphique") {
+  const element = document.getElementById(elementId);
+  if (!element) return;
+
+  const clone = element.cloneNode(true);
+  replaceModernColors(clone);
+
+  const container = document.createElement('div');
+  container.appendChild(clone);
+  container.style.padding = '20px';
+  container.style.backgroundColor = '#ffffff';
+  container.style.color = '#000000';
+  container.style.width = '100%';
+  container.style.display = 'block';
+
+  document.body.appendChild(container);
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  let canvas;
+  try {
+    canvas = await html2canvas(container, {
+      scale: 2,
+      backgroundColor: '#ffffff',
+      useCORS: true,
+      logging: false,
+    });
+  } catch (err) {
+    console.error('html2canvas failed:', err);
+    document.body.removeChild(container);
+    alert('Erreur de capture. Veuillez réessayer.');
+    return;
+  } finally {
+    document.body.removeChild(container);
+  }
+
+  const imgData = canvas.toDataURL('image/png');
+
+  const printWindow = window.open('', '_blank', 'width=1200,height=900');
+  if (!printWindow) return;
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>${title}</title>
+        <style>
+          body {
+            margin: 0;
+            padding: 24px;
+            font-family: Arial, sans-serif;
+            background: white;
+            color: black;
+          }
+          .title {
+            font-size: 20px;
+            margin-bottom: 16px;
+            font-weight: 600;
+          }
+          img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+          }
+          @page {
+            size: auto;
+            margin: 12mm;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="title">${title}</div>
+        <img src="${imgData}" alt="${title}" />
+        <script>
+          window.onload = () => {
+            window.focus();
+            window.print();
+          };
+        </script>
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+}
+
 function UserStatsGraphCard({ section }) {
   if (!section) return null;
 
   const cards = section.cards || [];
   const charts = section.charts || [];
 
+  const exportDataToExcel = () => {
+    const rows = [];
+
+    // Add cards summary
+    if (cards.length) {
+      const cardRow = { Type: "Indicateurs" };
+      cards.forEach(c => { cardRow[c.label] = c.value; });
+      rows.push(cardRow);
+      rows.push({}); // spacer
+    }
+
+    // Add each chart's data
+    charts.forEach(chart => {
+      rows.push({ Type: `--- ${chart.title} ---` });
+      if (chart.data && chart.data.length) {
+        chart.data.forEach(item => {
+          rows.push({ ...item });
+        });
+      }
+      rows.push({}); // spacer
+    });
+
+    exportToStyledXLSX(rows, section.title.replace(/\s/g, '_'), section.title);
+  };
+
+  const exportToPdf = () => {
+    const elementId = `print-${section.key}`;
+    let target = document.getElementById(elementId);
+    if (!target) {
+      // create temporary clone
+      const original = document.querySelector(`[data-section-key="${section.key}"]`);
+      if (original) {
+        const clone = original.cloneNode(true);
+        clone.id = elementId;
+        clone.style.position = 'absolute';
+        clone.style.left = '-9999px';
+        document.body.appendChild(clone);
+        target = clone;
+      }
+    }
+    if (target) {
+      exportElementToPDF(elementId, section.title).finally(() => {
+        if (target !== document.getElementById(elementId) && target.parentNode) target.remove();
+      });
+    }
+  };
+
   return (
-    <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+    <section
+      data-section-key={section.key}
+      id={`print-${section.key}`}
+      className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
+    >
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">
-            {section.title}
-          </h2>
-          {section.subtitle ? (
-            <div className="mt-1 text-xs text-slate-400">{section.subtitle}</div>
-          ) : null}
+          <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">{section.title}</h2>
+          {section.subtitle && <div className="mt-1 text-xs text-slate-400">{section.subtitle}</div>}
         </div>
-
-        {section.downloadUrl ? (
-          <a
-            href={section.downloadUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 transition hover:bg-cyan-500/20"
+        <div className="flex gap-2">
+          <button
+            onClick={exportDataToExcel}
+            className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs font-mono text-cyan-300 transition hover:bg-cyan-500/20"
           >
-            Télécharger
-          </a>
-        ) : null}
+            D_Data
+          </button>
+          <button
+            onClick={exportToPdf}
+            className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs font-mono text-cyan-300 transition hover:bg-cyan-500/20"
+          >
+            D_PDF
+          </button>
+        </div>
       </div>
 
-      {cards.length > 0 ? (
+      {cards.length > 0 && (
         <div className="mb-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           {cards.map((card, index) => (
-            <UserStatsGraphMetricCard
-              key={`${section.key}-metric-${index}`}
-              card={card}
-            />
+            <UserStatsGraphMetricCard key={`${section.key}-metric-${index}`} card={card} />
           ))}
         </div>
-      ) : null}
+      )}
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
         {charts.map((chart, index) => (
@@ -867,6 +1026,264 @@ function UserStatsGraphCard({ section }) {
   );
 }
 
+function ChartHeader({ icon: Icon, title, printTargetId, printTitle, onExportData, onExportPdf }) {
+  return (
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="flex items-center gap-2">
+        {Icon && <Icon className="h-5 w-5 text-cyan-300" />}
+        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">{title}</h2>
+      </div>
+      <div className="flex gap-2">
+        {printTargetId && (
+          <button
+            type="button"
+            onClick={() => printElementById(printTargetId, printTitle || title)}
+            className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-2 transition hover:bg-cyan-500/20"
+            title="Imprimer ce graphique"
+          >
+            <Printer className="h-4 w-4 text-cyan-300" />
+          </button>
+        )}
+        {onExportData && (
+          <button
+            type="button"
+            onClick={onExportData}
+            className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs font-mono text-cyan-300 transition hover:bg-cyan-500/20"
+          >
+            D_Data
+          </button>
+        )}
+        {onExportPdf && (
+          <button
+            type="button"
+            onClick={onExportPdf}
+            className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs font-mono text-cyan-300 transition hover:bg-cyan-500/20"
+          >
+            D_PDF
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Add this component before the main ActivityDisplay component or inside it
+function ListGraphView({ listDetail, listId, onBack }) {
+  if (!listDetail) return null;
+  const { tables } = listDetail;
+
+  // Helper to parse status table
+  const parseStatusTable = () => {
+    if (!tables?.statuses || tables.statuses.length < 2) return { headers: [], rows: [] };
+    const headers = tables.statuses[0];
+    const rows = tables.statuses.slice(1);
+    return { headers, rows };
+  };
+
+  // Helper to parse owners/ranks (simple two columns: name, called, not called)
+  const parseSimpleTable = (tableData) => {
+    if (!tableData || tableData.length < 2) return [];
+    const headers = tableData[0];
+    const rows = tableData.slice(1);
+    return rows.map(row => ({
+      name: row[0],
+      called: parseInt(row[1], 10) || 0,
+      notCalled: parseInt(row[2], 10) || 0,
+    }));
+  };
+
+  // Parse calledCounts table: columns: STATUS, STATUS NAME, 0,1,2,3, SUBTOTAL
+  const parseCalledCounts = () => {
+    if (!tables?.calledCounts || tables.calledCounts.length < 2) return [];
+    const headers = tables.calledCounts[0];
+    const rows = tables.calledCounts.slice(1);
+    return rows.map(row => ({
+      status: row[0],
+      statusName: row[1],
+      count0: parseInt(row[2], 10) || 0,
+      count1: parseInt(row[3], 10) || 0,
+      count2: parseInt(row[4], 10) || 0,
+      count3: parseInt(row[5], 10) || 0,
+      subtotal: parseInt(row[6], 10) || 0,
+    }));
+  };
+
+  // Parse todayCalledCounts: expects rows like ["0","Y","4069"] etc.
+  const parseTodayCalled = () => {
+    if (!tables?.todayCalledCounts || tables.todayCalledCounts.length < 2) return { called: 0, notCalled: 0 };
+    const rows = tables.todayCalledCounts.slice(1);
+    let called = 0, notCalled = 0;
+    rows.forEach(row => {
+      const count = parseInt(row[2], 10) || 0;
+      if (row[1]?.toUpperCase() === 'Y') called += count;
+      else if (row[1]?.toUpperCase() === 'N') notCalled += count;
+    });
+    return { called, notCalled };
+  };
+
+  // Parse 24hrCalledCounts: usually one row with total leads
+  const parse24hrCalled = () => {
+    if (!tables?.['24hrCalledCounts'] || tables['24hrCalledCounts'].length < 2) return 0;
+    const rows = tables['24hrCalledCounts'].slice(1);
+    let total = 0;
+    rows.forEach(row => {
+      total += parseInt(row[1], 10) || 0;
+    });
+    return total;
+  };
+
+  const statusData = parseStatusTable();
+  const ownersData = parseSimpleTable(tables?.owners);
+  const ranksData = parseSimpleTable(tables?.ranks);
+  const calledCountsData = parseCalledCounts();
+  const todayCalled = parseTodayCalled();
+  const hr24Total = parse24hrCalled();
+
+  const chartPalette = ["#22d3ee", "#38bdf8", "#6366f1", "#a855f7", "#10b981", "#f59e0b"];
+
+  return (
+    <section className="space-y-5">
+      <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+        <div className="flex items-center gap-3 mb-4">
+          <button
+            onClick={onBack}
+            className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 hover:bg-cyan-500/20"
+          >
+            ← Retour à la liste
+          </button>
+          <h1 className="font-mono text-lg uppercase tracking-[0.22em] text-cyan-200">
+            Analyse graphique de la liste: {listId}
+          </h1>
+        </div>
+
+        {/* Statuses chart */}
+        {statusData.rows.length > 0 && (
+          <div className="mb-8 rounded-2xl border border-cyan-500/15 bg-slate-900/70 p-4">
+            <h3 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200 mb-4">Statuses Within This List</h3>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={statusData.rows.map(row => ({
+                  name: row[0],
+                  called: parseInt(row[2], 10),
+                  notCalled: parseInt(row[3], 10),
+                  penetration: parseFloat(row[5]) || 0,
+                }))}>
+                  <CartesianGrid stroke="#12324b" vertical={false} />
+                  <XAxis dataKey="name" stroke="#94a3b8" angle={-45} textAnchor="end" height={80} interval={0} />
+                  <YAxis yAxisId="left" stroke="#94a3b8" />
+                  <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" />
+                  <Tooltip contentStyle={{ background: "#020617", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "16px" }} />
+                  <Legend />
+                  <Bar yAxisId="left" dataKey="called" name="Appelés" fill="#22d3ee" radius={[8,8,0,0]} />
+                  <Bar yAxisId="left" dataKey="notCalled" name="Non appelés" fill="#6366f1" radius={[8,8,0,0]} />
+                  <Line yAxisId="right" type="monotone" dataKey="penetration" name="Pénétration (%)" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Owners chart */}
+        {ownersData.length > 0 && (
+          <div className="mb-8 rounded-2xl border border-cyan-500/15 bg-slate-900/70 p-4">
+            <h3 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200 mb-4">Owners Within This List</h3>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={ownersData}>
+                  <CartesianGrid stroke="#12324b" vertical={false} />
+                  <XAxis dataKey="name" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip contentStyle={{ background: "#020617", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "16px" }} />
+                  <Legend />
+                  <Bar dataKey="called" name="Appelés" fill="#22d3ee" radius={[8,8,0,0]} />
+                  <Bar dataKey="notCalled" name="Non appelés" fill="#6366f1" radius={[8,8,0,0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Ranks chart */}
+        {ranksData.length > 0 && (
+          <div className="mb-8 rounded-2xl border border-cyan-500/15 bg-slate-900/70 p-4">
+            <h3 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200 mb-4">Ranks Within This List</h3>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={ranksData}>
+                  <CartesianGrid stroke="#12324b" vertical={false} />
+                  <XAxis dataKey="name" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip contentStyle={{ background: "#020617", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "16px" }} />
+                  <Legend />
+                  <Bar dataKey="called" name="Appelés" fill="#22d3ee" radius={[8,8,0,0]} />
+                  <Bar dataKey="notCalled" name="Non appelés" fill="#6366f1" radius={[8,8,0,0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Called Counts chart */}
+        {calledCountsData.length > 0 && (
+          <div className="mb-8 rounded-2xl border border-cyan-500/15 bg-slate-900/70 p-4">
+            <h3 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200 mb-4">Called Counts Within This List</h3>
+            <div className="h-96">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={calledCountsData}>
+                  <CartesianGrid stroke="#12324b" vertical={false} />
+                  <XAxis dataKey="status" stroke="#94a3b8" angle={-45} textAnchor="end" height={80} interval={0} />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip contentStyle={{ background: "#020617", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "16px" }} />
+                  <Legend />
+                  <Bar dataKey="count0" name="0 appel" fill="#a855f7" stackId="calls" radius={[4,4,0,0]} />
+                  <Bar dataKey="count1" name="1 appel" fill="#22d3ee" stackId="calls" radius={[4,4,0,0]} />
+                  <Bar dataKey="count2" name="2 appels" fill="#10b981" stackId="calls" radius={[4,4,0,0]} />
+                  <Bar dataKey="count3" name="3 appels" fill="#f59e0b" stackId="calls" radius={[4,4,0,0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Today Called Counts */}
+        {(todayCalled.called > 0 || todayCalled.notCalled > 0) && (
+          <div className="mb-8 rounded-2xl border border-cyan-500/15 bg-slate-900/70 p-4">
+            <h3 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200 mb-4">Today Called Counts</h3>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={[
+                    { name: "Appelés aujourd'hui", value: todayCalled.called },
+                    { name: "Non appelés aujourd'hui", value: todayCalled.notCalled }
+                  ]} dataKey="value" nameKey="name" innerRadius={60} outerRadius={100} paddingAngle={2}>
+                    <Cell fill="#22d3ee" />
+                    <Cell fill="#6366f1" />
+                  </Pie>
+                  <Tooltip contentStyle={{ background: "#020617", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "16px" }} />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* 24-Hour Called Counts */}
+        {hr24Total > 0 && (
+          <div className="rounded-2xl border border-cyan-500/15 bg-slate-900/70 p-4">
+            <h3 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200 mb-4">24-Hour Called Counts</h3>
+            <div className="flex justify-center items-center h-40">
+              <div className="text-center">
+                <div className="text-5xl font-mono text-cyan-200">{hr24Total}</div>
+                <div className="text-sm text-slate-400 mt-2">Leads avec 0 appel dans les 24h</div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function ActivityDisplay() {
   const [clock, setClock] = useState("");
   const [activeSidebar, setActiveSidebar] = useState("reports");
@@ -874,7 +1291,14 @@ export default function ActivityDisplay() {
   const [expandedMenus, setExpandedMenus] = useState({
     reports: true,
     userStats: true,
+    campaigns: true,
   });
+
+  // new state:
+  const isCampaignsView = activeReportLink.startsWith("campaigns-");
+  const [campaignsLoading, setCampaignsLoading] = useState(false);
+  const [campaignsError, setCampaignsError] = useState("");
+  const [campaignsData, setCampaignsData] = useState(null);
 
   const [userStatsFilters, setUserStatsFilters] = useState(() => {
     const today = getTodayInputDate();
@@ -938,6 +1362,27 @@ export default function ActivityDisplay() {
     });
 
     const [dataSource, setDataSource] = useState("realtime");
+    
+    // Inside ActivityDisplay component, add new state
+    const [selectedCampaignId, setSelectedCampaignId] = useState(null);
+    const [campaignDetail, setCampaignDetail] = useState(null);
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [detailError, setDetailError] = useState("");
+
+    const [detailTab, setDetailTab] = useState("basic");
+
+    // List detail state
+    const [selectedListId, setSelectedListId] = useState(null);
+    const [listDetail, setListDetail] = useState(null);
+    const [listDetailLoading, setListDetailLoading] = useState(false);
+    const [listDetailError, setListDetailError] = useState("");
+
+    const isListDetailView = activeReportLink === "lists-detail";
+
+    const isListGraphView = activeReportLink === "lists-graph";
+
+    // Determine if we are viewing a detail
+    const isCampaignDetailView = activeReportLink === "campaigns-detail";
 
 
   useEffect(() => {
@@ -1647,6 +2092,79 @@ export default function ActivityDisplay() {
   userStatsFilters.searchArchived,
 ]);
 
+  useEffect(() => {
+    if (!isCampaignsView) return;
+    let cancelled = false;
+
+    const loadCampaigns = async () => {
+      try {
+        setCampaignsLoading(true);
+        setCampaignsError("");
+        const url = new URL(`${API_BASE_URL}/api/activity-display/campaigns`);
+        const response = await fetch(url.toString(), { cache: "no-store" });
+        if (!response.ok) throw new Error(`Campaigns backend error: ${response.status}`);
+        const result = await response.json();
+        if (!cancelled) setCampaignsData(result);
+      } catch (err) {
+        if (!cancelled) {
+          setCampaignsData(null);
+          setCampaignsError("Impossible de charger les campagnes.");
+        }
+      } finally {
+        if (!cancelled) setCampaignsLoading(false);
+      }
+    };
+
+    loadCampaigns();
+    return () => { cancelled = true; };
+  }, [isCampaignsView, activeReportLink]);
+
+  useEffect(() => {
+    if (!isCampaignDetailView || !selectedCampaignId) return;
+
+    let cancelled = false;
+    const loadDetail = async () => {
+      try {
+        setDetailLoading(true);
+        setDetailError("");
+        const url = `${API_BASE_URL}/api/activity-display/campaigns/${selectedCampaignId}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (!cancelled) setCampaignDetail(data);
+      } catch (err) {
+        if (!cancelled) setDetailError(err.message);
+      } finally {
+        if (!cancelled) setDetailLoading(false);
+      }
+    };
+    loadDetail();
+    return () => { cancelled = true; };
+  }, [isCampaignDetailView, selectedCampaignId]);
+
+  useEffect(() => {
+    if (!isListDetailView || !selectedListId) return;
+
+    let cancelled = false;
+    const loadListDetail = async () => {
+      try {
+        setListDetailLoading(true);
+        setListDetailError("");
+        const url = `${API_BASE_URL}/api/activity-display/lists/${selectedListId}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (!cancelled) setListDetail(data);
+      } catch (err) {
+        if (!cancelled) setListDetailError(err.message);
+      } finally {
+        if (!cancelled) setListDetailLoading(false);
+      }
+    };
+    loadListDetail();
+    return () => { cancelled = true; };
+  }, [isListDetailView, selectedListId]);
+
 
   return (
     <div className="min-h-screen overflow-hidden bg-[#050912] text-slate-100">
@@ -1754,6 +2272,17 @@ export default function ActivityDisplay() {
                 expanded={expandedMenus.userStats}
                 onToggle={() =>
                   setExpandedMenus((prev) => ({ ...prev, userStats: !prev.userStats }))
+                }
+                onSelect={setActiveReportLink}
+              />
+
+              <SidebarAccordionSection
+                title="Campaigns"
+                items={campaignsNavItems}
+                activeKey={activeReportLink}
+                expanded={expandedMenus.campaigns}
+                onToggle={() =>
+                  setExpandedMenus((prev) => ({ ...prev, campaigns: !prev.campaigns }))
                 }
                 onSelect={setActiveReportLink}
               />
@@ -1896,6 +2425,65 @@ export default function ActivityDisplay() {
                 </section>
               )}
 
+              {isCampaignsView && (
+                <section className="space-y-5">
+                  {campaignsLoading && (
+                    <div className="font-mono text-sm uppercase tracking-[0.25em] text-cyan-300 text-center py-8">
+                      Chargement des campagnes...
+                    </div>
+                  )}
+                  {campaignsError && (
+                    <div className="rounded-[28px] border border-red-500/30 bg-red-500/10 p-4 text-red-200">
+                      {campaignsError}
+                    </div>
+                  )}
+                  {campaignsData?.campaigns?.length > 0 && (
+                    <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                      <div className="mb-4 font-mono text-xs uppercase tracking-[0.2em] text-cyan-400">
+                        Campaign Listings — {campaignsData.campaigns.length} campagne(s)
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs font-mono">
+                          <thead>
+                            <tr className="border-b border-cyan-500/20 text-left text-cyan-400 uppercase tracking-wider">
+                              {["Campaign ID","Name","Active","Group","Dial Method","Level","Lead Order","Dial Statuses","DP"].map((h) => (
+                                <th key={h} className="pb-2 pr-4 font-normal">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {campaignsData.campaigns.map((c, i) => (
+                              <tr
+                                key={c.campaignId || i}
+                                onClick={() => {
+                                  setSelectedCampaignId(c.campaignId);
+                                  setActiveReportLink("campaigns-detail");
+                                }}
+                                className={`border-b border-slate-800 cursor-pointer hover:bg-slate-800/50 transition ${i % 2 === 0 ? "bg-slate-900/30" : ""}`}
+                              >
+                                <td className="py-2 pr-4 text-cyan-300">{c.campaignId}</td>
+                                <td className="py-2 pr-4 text-slate-200">{c.name}</td>
+                                <td className="py-2 pr-4">
+                                  <span className={c.active === "Y" ? "text-emerald-400" : "text-slate-500"}>
+                                    {c.active}
+                                  </span>
+                                </td>
+                                <td className="py-2 pr-4 text-slate-300">{c.group}</td>
+                                <td className="py-2 pr-4 text-slate-300">{c.dialMethod}</td>
+                                <td className="py-2 pr-4 text-slate-400">{c.level}</td>
+                                <td className="py-2 pr-4 text-slate-400">{c.leadOrder}</td>
+                                <td className="py-2 pr-4 text-slate-400">{c.dialStatuses}</td>
+                                <td className="py-2 pr-4 text-slate-400">{c.dp}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  )}
+                </section>
+              )}
+
               {!loading && dashboardData && activeReportLink === "live-board" && chartsData && (
                 <>
                   <section className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 shadow-[0_0_35px_rgba(34,211,238,0.06)] backdrop-blur-xl">
@@ -2033,6 +2621,8 @@ export default function ActivityDisplay() {
                         title="Nombre d'appels passés par agent"
                         printTargetId="print-agent-calls-chart"
                         printTitle="Nombre d'appels passés par agent"
+                        onExportData={() => exportToStyledXLSX(chartsData.currentGraphsAgents, 'appels_par_agent')}
+                        onExportPdf={() => exportElementToPDF('print-agent-calls-chart', 'appels_par_agent')}
                       />
                       <div id="print-agent-calls-chart">
                         <div className="h-[320px]">
@@ -3304,6 +3894,335 @@ export default function ActivityDisplay() {
                     </div>
                   </section>
                 </>
+              )}
+
+              {isCampaignDetailView && (
+                <section className="space-y-5">
+                  <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                    {/* Header with back button */}
+                    <div className="flex items-center gap-3 mb-4">
+                      <button
+                        onClick={() => {
+                          setActiveReportLink("campaigns-main");
+                          setSelectedCampaignId(null);
+                          setCampaignDetail(null);
+                        }}
+                        className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 hover:bg-cyan-500/20"
+                      >
+                        ← Retour à la liste
+                      </button>
+                      <h1 className="font-mono text-lg uppercase tracking-[0.22em] text-cyan-200">
+                        Campaign Detail: {selectedCampaignId}
+                      </h1>
+                    </div>
+
+                    {detailLoading && <div className="text-center py-8 text-cyan-300">Chargement...</div>}
+                    {detailError && <div className="text-red-400 p-4">{detailError}</div>}
+                    
+                    {campaignDetail && (
+                      <>
+                        {/* Tabs Navigation */}
+                        <div className="flex flex-wrap gap-2 mb-6 border-b border-slate-800 pb-2">
+                          {campaignDetailTabs.map((tab) => (
+                            <button
+                              key={tab.key}
+                              onClick={() => setDetailTab(tab.key)}
+                              className={`px-4 py-2 text-sm font-mono uppercase tracking-wider rounded-t-lg transition ${
+                                detailTab === tab.key
+                                  ? "bg-cyan-500/20 text-cyan-200 border-b-2 border-cyan-400"
+                                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+                              }`}
+                            >
+                              {tab.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Tab Content */}
+                        <div className="max-h-[70vh] overflow-y-auto pr-2">
+                          {/* Basic View */}
+                          {detailTab === "basic" && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {Object.entries(campaignDetail)
+                                .filter(([key]) => !["lists", "dialStatusesSelected"].includes(key))
+                                .map(([key, value]) => (
+                                  <div key={key} className="border-b border-slate-800 pb-2">
+                                    <span className="text-slate-400 text-sm">{key}:</span>
+                                    <div className="mt-1 text-slate-200 font-mono break-all max-h-32 overflow-y-auto">
+                                      {Array.isArray(value) ? value.join(", ") : String(value)}
+                                    </div>
+                                  </div>
+                                ))}
+                            </div>
+                          )}
+
+                          {/* Advanced View (you can refine field grouping) */}
+                          {detailTab === "advanced" && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {Object.entries(campaignDetail)
+                                .filter(([key]) => 
+                                  ["Web Form", "Park Music", "Allow Closers", "Default Transfer", 
+                                  "Allow Emails", "Allow Chats", "Allow Inbound and Blended", 
+                                  "Admin User Group"].includes(key)
+                                )
+                                .map(([key, value]) => (
+                                  <div key={key} className="border-b border-slate-800 pb-2">
+                                    <span className="text-slate-400 text-sm">{key}:</span>
+                                    <div className="mt-1 text-slate-200 font-mono break-all max-h-32 overflow-y-auto">
+                                      {String(value)}
+                                    </div>
+                                  </div>
+                                ))}
+                            </div>
+                          )}
+
+                          {/* Lists View */}
+                          {detailTab === "lists" && (
+                            <div>
+                              <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-3">
+                                Lists Within This Campaign
+                              </h3>
+                              {campaignDetail.lists && campaignDetail.lists.length > 0 ? (
+                                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                                  <table className="w-full text-xs font-mono">
+                                    <thead className="bg-slate-900/80 text-cyan-400 uppercase">
+                                      <tr>
+                                        <th className="px-3 py-2 text-left">List ID</th>
+                                        <th className="px-3 py-2 text-left">List Name</th>
+                                        <th className="px-3 py-2 text-left">Description</th>
+                                        <th className="px-3 py-2 text-left">Level</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {campaignDetail.lists.map((list, idx) => (
+                                        <tr key={idx} className="border-b border-slate-800 hover:bg-slate-800/30">
+                                          <td className="px-3 py-2">
+                                            <button
+                                              onClick={() => {
+                                                setSelectedListId(list.listId);
+                                                setActiveReportLink("lists-detail");
+                                              }}
+                                              className="text-cyan-300 hover:text-cyan-100 hover:underline cursor-pointer"
+                                            >
+                                              {list.listId}
+                                            </button>
+                                          </td>
+                                          <td className="px-3 py-2 text-slate-200">{list.listName}</td>
+                                          <td className="px-3 py-2 text-slate-300 max-w-xs break-all">{list.description}</td>
+                                          <td className="px-3 py-2 text-slate-300">{list.level}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <p className="text-slate-500">No lists found for this campaign.</p>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Dial Statuses View */}
+                          {detailTab === "statuses" && (
+                            <div>
+                              <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-3">
+                                Selected Dial Statuses
+                              </h3>
+                              {campaignDetail.dialStatusesSelected && campaignDetail.dialStatusesSelected.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {campaignDetail.dialStatusesSelected.map((status, idx) => (
+                                    <span key={idx} className="px-3 py-1 bg-slate-800 rounded-full text-xs text-slate-200 border border-slate-700">
+                                      {status}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-slate-500">No dial statuses selected.</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {isListDetailView && (
+                <section className="space-y-5">
+                  <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                    {/* Header with back button */}
+                    <div className="flex items-center gap-3 mb-4">
+                      <button
+                        onClick={() => {
+                          setActiveReportLink("campaigns-detail");
+                          setSelectedListId(null);
+                          setListDetail(null);
+                        }}
+                        className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 hover:bg-cyan-500/20"
+                      >
+                        ← Retour à la campagne
+                      </button>
+                      <h1 className="font-mono text-lg uppercase tracking-[0.22em] text-cyan-200">
+                        List Detail: {selectedListId}
+                      </h1>
+                      {/* Add graph button */}
+                      <button
+                        onClick={() => setActiveReportLink("lists-graph")}
+                        className="ml-auto rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 hover:bg-cyan-500/20"
+                      >
+                        📊 Vue graphique
+                      </button>
+                    </div>
+
+                    {listDetailLoading && <div className="text-center py-8 text-cyan-300">Chargement...</div>}
+                    {listDetailError && <div className="text-red-400 p-4">{listDetailError}</div>}
+                    
+                    {listDetail && listDetail.tables && (
+                      <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2">
+                        {listDetail.tables.statuses && (
+                          <div>
+                            <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-2">Statuses Within This List</h3>
+                            <div className="overflow-x-auto rounded-xl border border-slate-800">
+                              <table className="w-full text-xs font-mono">
+                                <tbody>
+                                  {listDetail.tables.statuses.map((row, idx) => (
+                                    <tr key={idx} className="border-b border-slate-800 last:border-0">
+                                      {row.map((cell, i) => (
+                                        <td key={i} className={`px-3 py-1 ${i === 0 ? 'text-slate-200' : 'text-slate-300'}`}>{cell}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {listDetail.tables.timezones && (
+                          <div>
+                            <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-2">Time Zones Within This List</h3>
+                            <div className="overflow-x-auto rounded-xl border border-slate-800">
+                              <table className="w-full text-xs font-mono">
+                                <tbody>
+                                  {listDetail.tables.timezones.map((row, idx) => (
+                                    <tr key={idx} className="border-b border-slate-800 last:border-0">
+                                      {row.map((cell, i) => (
+                                        <td key={i} className={`px-3 py-1 ${i === 0 ? 'text-slate-200' : 'text-slate-300'}`}>{cell}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {listDetail.tables.owners && (
+                          <div>
+                            <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-2">Owners Within This List</h3>
+                            <div className="overflow-x-auto rounded-xl border border-slate-800">
+                              <table className="w-full text-xs font-mono">
+                                <tbody>
+                                  {listDetail.tables.owners.map((row, idx) => (
+                                    <tr key={idx} className="border-b border-slate-800 last:border-0">
+                                      {row.map((cell, i) => (
+                                        <td key={i} className={`px-3 py-1 ${i === 0 ? 'text-slate-200' : 'text-slate-300'}`}>{cell}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {listDetail.tables.ranks && (
+                          <div>
+                            <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-2">Ranks Within This List</h3>
+                            <div className="overflow-x-auto rounded-xl border border-slate-800">
+                              <table className="w-full text-xs font-mono">
+                                <tbody>
+                                  {listDetail.tables.ranks.map((row, idx) => (
+                                    <tr key={idx} className="border-b border-slate-800 last:border-0">
+                                      {row.map((cell, i) => (
+                                        <td key={i} className={`px-3 py-1 ${i === 0 ? 'text-slate-200' : 'text-slate-300'}`}>{cell}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {listDetail.tables.calledCounts && (
+                          <div>
+                            <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-2">Called Counts Within This List</h3>
+                            <div className="overflow-x-auto rounded-xl border border-slate-800">
+                              <table className="w-full text-xs font-mono">
+                                <tbody>
+                                  {listDetail.tables.calledCounts.map((row, idx) => (
+                                    <tr key={idx} className="border-b border-slate-800 last:border-0">
+                                      {row.map((cell, i) => (
+                                        <td key={i} className={`px-3 py-1 ${i === 0 ? 'text-slate-200' : 'text-slate-300'}`}>{cell}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {listDetail.tables.todayCalledCounts && (
+                          <div>
+                            <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-2">Today Called Counts</h3>
+                            <div className="overflow-x-auto rounded-xl border border-slate-800">
+                              <table className="w-full text-xs font-mono">
+                                <tbody>
+                                  {listDetail.tables.todayCalledCounts.map((row, idx) => (
+                                    <tr key={idx} className="border-b border-slate-800 last:border-0">
+                                      {row.map((cell, i) => (
+                                        <td key={i} className={`px-3 py-1 ${i === 0 ? 'text-slate-200' : 'text-slate-300'}`}>{cell}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {listDetail.tables["24hrCalledCounts"] && (
+                          <div>
+                            <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-2">24-Hour Called Counts</h3>
+                            <div className="overflow-x-auto rounded-xl border border-slate-800">
+                              <table className="w-full text-xs font-mono">
+                                <tbody>
+                                  {listDetail.tables["24hrCalledCounts"].map((row, idx) => (
+                                    <tr key={idx} className="border-b border-slate-800 last:border-0">
+                                      {row.map((cell, i) => (
+                                        <td key={i} className={`px-3 py-1 ${i === 0 ? 'text-slate-200' : 'text-slate-300'}`}>{cell}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {isListGraphView && listDetail && (
+                <ListGraphView
+                  listDetail={listDetail}
+                  listId={selectedListId}
+                  onBack={() => setActiveReportLink("campaigns-detail")}
+                />
               )}
 
             </div>
