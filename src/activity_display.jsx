@@ -43,6 +43,7 @@ import {
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import html2canvas from "html2canvas";
+import JSZip from 'jszip';
 
 const reportOptions = [
   "Voir plus",
@@ -1284,6 +1285,291 @@ function ListGraphView({ listDetail, listId, onBack }) {
   );
 }
 
+function CalledCountsTable({ rows, listId, onLeadSearch }) {
+  if (!rows || rows.length < 2) return null;
+
+  const headers = rows[0]; // ["STATUS","STATUS NAME","0","1","2","3","SUBTOTAL"]
+  const dataRows = rows.slice(1);
+
+  const calledCountCols = new Set(["0", "1", "2", "3"]);
+
+  // Build the params object for internal navigation instead of a URL
+  const getLeadParams = (status, colHeader) => {
+    if (calledCountCols.has(colHeader)) {
+      return { list_id: listId, status, called_count: colHeader };
+    }
+    if (colHeader === "SUBTOTAL") {
+      return { list_id: listId, status };
+    }
+    return null;
+  };
+
+  const exportToExcel = () => {
+    const exportData = [headers, ...dataRows];
+    const sheetData = exportData.map((row) => {
+      const obj = {};
+      headers.forEach((header, idx) => {
+        obj[header] = row[idx] || "";
+      });
+      return obj;
+    });
+    exportToStyledXLSX(sheetData, `called_counts_list_${listId}`, "Called Counts");
+  };
+
+  const downloadAllLeads = async () => {
+    const zip = new JSZip();
+    const fetchPromises = [];
+
+    // Identify all clickable cells (numeric >0)
+    dataRows.forEach((row) => {
+      const status = row[0];
+      row.forEach((cell, colIdx) => {
+        const colHeader = headers[colIdx];
+        const numericVal = /^\d+$/.test(String(cell).trim()) && Number(cell) > 0;
+        if (!numericVal) return;
+
+        const params = getLeadParams(status, colHeader);
+        if (!params) return;
+
+        // Build a clean filename
+        const suffix = params.called_count !== undefined
+          ? `_called${params.called_count}`
+          : "";
+        const filename = `leads_${listId}_${status}${suffix}.xlsx`
+          .replace(/[^a-zA-Z0-9_.-]/g, "_");
+
+        // Fetch lead data
+        const fetchPromise = fetch(
+          `${API_BASE_URL}/api/activity-display/lead-search?list_id=${encodeURIComponent(params.list_id)}&status=${encodeURIComponent(params.status)}${params.called_count !== undefined ? `&called_count=${encodeURIComponent(params.called_count)}` : ""}`
+        )
+          .then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+          })
+          .then((data) => {
+            if (data.headers && data.rows) {
+              const sheetData = [data.headers, ...data.rows];
+              const ws = XLSX.utils.aoa_to_sheet(sheetData);
+              ws['!cols'] = data.headers.map((h) => ({ wch: Math.max(String(h).length, 15) }));
+              const wb = XLSX.utils.book_new();
+              XLSX.utils.book_append_sheet(wb, ws, "Leads");
+              const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+              zip.file(filename, excelBuffer);
+            }
+          })
+          .catch((err) => {
+            console.error(`Failed to fetch leads for ${filename}:`, err);
+          });
+
+        fetchPromises.push(fetchPromise);
+      });
+    });
+
+    if (fetchPromises.length === 0) {
+      alert("Aucune donnée de leads à télécharger.");
+      return;
+    }
+
+    try {
+      await Promise.all(fetchPromises);
+      const content = await zip.generateAsync({ type: "blob" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(content);
+      link.download = `leads_${listId}_all.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      console.error("Erreur lors de la création du ZIP:", error);
+      alert("Erreur lors du téléchargement des leads.");
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex justify-end mb-2 gap-2">
+        <button
+          onClick={downloadAllLeads}
+          className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs font-mono text-cyan-300 transition hover:bg-cyan-500/20"
+        >
+          Download All
+        </button>
+        <button
+          onClick={exportToExcel}
+          className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs font-mono text-cyan-300 transition hover:bg-cyan-500/20"
+        >
+          Xlsx
+        </button>
+      </div>
+      <div className="overflow-x-auto rounded-xl border border-slate-800">
+        <table className="w-full text-xs font-mono">
+          <thead className="bg-slate-900/80 text-cyan-400 uppercase">
+            <tr>
+              {headers.map((header, idx) => (
+                <th key={idx} className="px-3 py-2 text-left">
+                  {header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {dataRows.map((row, rowIdx) => (
+              <tr key={rowIdx} className="border-b border-slate-800 last:border-0">
+                {row.map((cell, colIdx) => {
+                  const colHeader = headers[colIdx];
+                  const status = row[0];
+                  const numericVal = /^\d+$/.test(String(cell).trim()) && Number(cell) > 0;
+                  const params = numericVal ? getLeadParams(status, colHeader) : null;
+                  return (
+                    <td key={colIdx} className="px-3 py-1 text-slate-200">
+                      {params && onLeadSearch ? (
+                        <button
+                          onClick={() => onLeadSearch(params)}
+                          className="text-cyan-300 hover:underline cursor-pointer"
+                        >
+                          {cell}
+                        </button>
+                      ) : (
+                        cell
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Add this component after the existing helper functions and before ActivityDisplay
+const LeadGraphView = ({ headers, rows }) => {
+  const getIndex = (keyword) => headers.findIndex((h) => h.toUpperCase().includes(keyword));
+  
+  const statusIdx = getIndex("STATUS");
+  const agentIdx = getIndex("AGENT");
+  const cityIdx = getIndex("CITY");
+  const dateIdx = getIndex("CALL");
+
+  const { statusData, agentData, cityData, timeData } = useMemo(() => {
+    const statusCount = {};
+    const agentCount = {};
+    const cityCount = {};
+    const timeCount = {};
+
+    rows.forEach((row) => {
+      if (statusIdx > -1 && row[statusIdx]) {
+        const stat = row[statusIdx];
+        statusCount[stat] = (statusCount[stat] || 0) + 1;
+      }
+      if (agentIdx > -1 && row[agentIdx]) {
+        const agent = row[agentIdx];
+        agentCount[agent] = (agentCount[agent] || 0) + 1;
+      }
+      if (cityIdx > -1 && row[cityIdx]) {
+        const city = row[cityIdx];
+        cityCount[city] = (cityCount[city] || 0) + 1;
+      }
+      if (dateIdx > -1 && row[dateIdx]) {
+        const match = row[dateIdx].match(/ (\d{2}):/);
+        if (match) {
+          const hour = `${match[1]}:00`;
+          timeCount[hour] = (timeCount[hour] || 0) + 1;
+        }
+      }
+    });
+
+    const format = (obj) => Object.entries(obj).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+
+    return {
+      statusData: format(statusCount),
+      agentData: format(agentCount).slice(0, 10),
+      cityData: format(cityCount).slice(0, 10),
+      timeData: format(timeCount).sort((a, b) => a.name.localeCompare(b.name)),
+    };
+  }, [rows, statusIdx, agentIdx, cityIdx, dateIdx]);
+
+  const COLORS = ["#22d3ee", "#38bdf8", "#6366f1", "#a855f7", "#ec4899", "#f43f5e", "#f59e0b", "#10b981"];
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+      {/* Calls Over Time */}
+      <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700/50">
+        <h4 className="text-sm font-semibold text-slate-300 mb-4">Volume d'appels par Heure</h4>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={timeData}>
+              <defs>
+                <linearGradient id="colorTime" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#38bdf8" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} />
+              <YAxis stroke="#94a3b8" fontSize={12} />
+              <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#f8fafc' }} />
+              <Area type="monotone" dataKey="value" stroke="#38bdf8" fillOpacity={1} fill="url(#colorTime)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Status Distribution */}
+      <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700/50">
+        <h4 className="text-sm font-semibold text-slate-300 mb-4">Répartition des Statuts</h4>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie data={statusData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                {statusData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#f8fafc' }} />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Top Cities */}
+      <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700/50">
+        <h4 className="text-sm font-semibold text-slate-300 mb-4">Top 10 des Villes</h4>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={cityData} layout="vertical" margin={{ left: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" horizontal={false} />
+              <XAxis type="number" stroke="#94a3b8" fontSize={12} />
+              <YAxis dataKey="name" type="category" stroke="#94a3b8" fontSize={10} width={80} />
+              <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#f8fafc' }} />
+              <Bar dataKey="value" fill="#a855f7" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Top Agents */}
+      <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700/50">
+        <h4 className="text-sm font-semibold text-slate-300 mb-4">Performance des Agents</h4>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={agentData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+              <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} />
+              <YAxis stroke="#94a3b8" fontSize={12} />
+              <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#f8fafc' }} />
+              <Bar dataKey="value" fill="#22d3ee" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function ActivityDisplay() {
   const [clock, setClock] = useState("");
   const [activeSidebar, setActiveSidebar] = useState("reports");
@@ -1377,6 +1663,33 @@ export default function ActivityDisplay() {
     const [listDetailLoading, setListDetailLoading] = useState(false);
     const [listDetailError, setListDetailError] = useState("");
 
+    const [selectedAgent, setSelectedAgent] = useState("all");
+    const [agentCallHistory, setAgentCallHistory] = useState([]);
+
+    const [vicidialBaseUrl, setVicidialBaseUrl] = useState("");
+
+    // Lead search state
+    const [leadSearchParams, setLeadSearchParams] = useState(null); // { list_id, status, called_count? }
+    const [leadSearchData, setLeadSearchData] = useState(null);
+    const [leadSearchLoading, setLeadSearchLoading] = useState(false);
+    const [leadSearchError, setLeadSearchError] = useState("");
+
+    // Add this state near other useState declarations
+    const [isLeadGraphView, setIsLeadGraphView] = useState(false);
+
+    // Export handler
+    const handleExportLeadXlsx = () => {
+      if (!leadSearchData?.headers || !leadSearchData?.rows) return;
+      const data = [leadSearchData.headers, ...leadSearchData.rows];
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      ws['!cols'] = leadSearchData.headers.map(h => ({ wch: Math.max(String(h).length, 15) }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Leads");
+      XLSX.writeFile(wb, "styled_leads.xlsx");
+    };
+
+    const isLeadSearchView = activeReportLink === "lead-search";
+
     const isListDetailView = activeReportLink === "lists-detail";
 
     const isListGraphView = activeReportLink === "lists-graph";
@@ -1384,6 +1697,13 @@ export default function ActivityDisplay() {
     // Determine if we are viewing a detail
     const isCampaignDetailView = activeReportLink === "campaigns-detail";
 
+  
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/activity-display/config`)
+      .then(res => res.json())
+      .then(data => setVicidialBaseUrl(data.vicidialBaseUrl))
+      .catch(err => console.error("Failed to fetch VICIdial base URL", err));
+  }, []);
 
   useEffect(() => {
     const updateClock = () => {
@@ -2031,6 +2351,36 @@ export default function ActivityDisplay() {
   const totalCallsOnInterval = useMemo(() => {
     return (historyData || []).reduce((sum, row) => sum + (Number(row.totalCalls) || 0), 0);
   }, [historyData]);
+  const uniqueAgents = useMemo(() => {
+    if (!dashboardData?.agentRows) return [];
+    const agents = [...new Set(dashboardData.agentRows.map(row => row.user).filter(Boolean))];
+    return agents.sort();
+  }, [dashboardData]);
+
+  useEffect(() => {
+    if (activeReportLink !== "calls-volume" || selectedAgent === "all") return;
+
+    let cancelled = false;
+    const loadAgentHistory = async () => {
+      try {
+        const url = new URL(`${API_BASE_URL}/api/activity-display/agent-calls-history`);
+        url.searchParams.set("mode", graphMode);
+        url.searchParams.set("start", graphStart);
+        url.searchParams.set("end", graphEnd);
+        url.searchParams.set("source", dataSource);
+        url.searchParams.set("agent", selectedAgent);
+        const response = await fetch(url);
+        const result = await response.json();
+        if (!cancelled) {
+          setAgentCallHistory(result.points || []);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    loadAgentHistory();
+    return () => { cancelled = true; };
+  }, [activeReportLink, selectedAgent, graphMode, graphStart, graphEnd, dataSource]);
 
   useEffect(() => {
   if (!isUserStatsView) return;
@@ -2164,6 +2514,35 @@ export default function ActivityDisplay() {
     loadListDetail();
     return () => { cancelled = true; };
   }, [isListDetailView, selectedListId]);
+
+  useEffect(() => {
+    if (!isLeadSearchView || !leadSearchParams) return;
+
+    let cancelled = false;
+    const loadLeadSearch = async () => {
+      try {
+        setLeadSearchLoading(true);
+        setLeadSearchError("");
+        const url = new URL(`${API_BASE_URL}/api/activity-display/lead-search`);
+        url.searchParams.set("list_id", leadSearchParams.list_id);
+        url.searchParams.set("status", leadSearchParams.status);
+        if (leadSearchParams.called_count !== undefined) {
+          url.searchParams.set("called_count", leadSearchParams.called_count);
+        }
+        const response = await fetch(url.toString(), { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (!cancelled) setLeadSearchData(data);
+      } catch (err) {
+        if (!cancelled) setLeadSearchError(err.message);
+      } finally {
+        if (!cancelled) setLeadSearchLoading(false);
+      }
+    };
+
+    loadLeadSearch();
+    return () => { cancelled = true; };
+  }, [isLeadSearchView, leadSearchParams]);
 
 
   return (
@@ -3137,29 +3516,36 @@ export default function ActivityDisplay() {
                     id="calls-volume-chart"
                     className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl"
                   >
-                    <ChartHeader icon={PhoneCall} title="Nb d'appels" printTargetId="calls-volume-chart" />
+                    {/* Dropdown outside ResponsiveContainer */}
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <PhoneCall className="h-5 w-5 text-cyan-300" />
+                        <h2 className="font-mono text-sm uppercase tracking-[0.24em] text-cyan-200">Nb d'appels</h2>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-slate-400">Agent:</label>
+                        <select
+                          value={selectedAgent}
+                          onChange={(e) => setSelectedAgent(e.target.value)}
+                          className="rounded-xl border border-cyan-500/20 bg-slate-900/80 px-2 py-1 text-xs text-cyan-100 outline-none"
+                        >
+                          <option value="all">Tous les agents</option>
+                          {uniqueAgents.map(agent => (
+                            <option key={agent} value={agent}>{agent}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Chart container */}
                     <div className="h-[360px]">
                       <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={historyData}>
+                        <AreaChart data={selectedAgent === "all" ? historyData : agentCallHistory}>
                           <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
                           <XAxis dataKey="label" stroke="#94a3b8" />
                           <YAxis stroke="#94a3b8" />
-                          <Tooltip
-                            contentStyle={{
-                              background: "#020617",
-                              border: "1px solid rgba(34,211,238,0.25)",
-                              borderRadius: "16px",
-                              color: "#e2e8f0",
-                            }}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="totalCalls"
-                            stroke="#22d3ee"
-                            fill="#22d3ee"
-                            fillOpacity={0.2}
-                            strokeWidth={3}
-                          />
+                          <Tooltip contentStyle={{ background: "#020617", border: "1px solid rgba(34,211,238,0.25)", borderRadius: "16px", color: "#e2e8f0" }} />
+                          <Area type="monotone" dataKey="totalCalls" stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.2} strokeWidth={3} />
                         </AreaChart>
                       </ResponsiveContainer>
                     </div>
@@ -4157,20 +4543,19 @@ export default function ActivityDisplay() {
 
                         {listDetail.tables.calledCounts && (
                           <div>
-                            <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-2">Called Counts Within This List</h3>
-                            <div className="overflow-x-auto rounded-xl border border-slate-800">
-                              <table className="w-full text-xs font-mono">
-                                <tbody>
-                                  {listDetail.tables.calledCounts.map((row, idx) => (
-                                    <tr key={idx} className="border-b border-slate-800 last:border-0">
-                                      {row.map((cell, i) => (
-                                        <td key={i} className={`px-3 py-1 ${i === 0 ? 'text-slate-200' : 'text-slate-300'}`}>{cell}</td>
-                                      ))}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
+                            <h3 className="text-cyan-300 font-mono text-sm uppercase tracking-wider mb-2">
+                              Called Counts Within This List
+                            </h3>
+                            <CalledCountsTable
+                              rows={listDetail.tables.calledCounts}
+                              listId={selectedListId}
+                              vicidialBaseUrl={vicidialBaseUrl}   /* can keep or remove — no longer used */
+                              onLeadSearch={(params) => {
+                                setLeadSearchParams(params);
+                                setLeadSearchData(null);
+                                setActiveReportLink("lead-search");
+                              }}
+                            />
                           </div>
                         )}
 
@@ -4212,6 +4597,98 @@ export default function ActivityDisplay() {
                           </div>
                         )}
                       </div>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {isLeadSearchView && (
+                <section className="space-y-5">
+                  <div className="rounded-[28px] border border-cyan-500/20 bg-slate-950/60 p-5 backdrop-blur-xl">
+                    {/* Header with back button */}
+                    <div className="flex items-center gap-3 mb-4">
+                      <button
+                        onClick={() => {
+                          setActiveReportLink("lists-detail");
+                          setLeadSearchData(null);
+                        }}
+                        className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200 hover:bg-cyan-500/20"
+                      >
+                        ← Retour à la liste
+                      </button>
+                      <h1 className="font-mono text-lg uppercase tracking-[0.22em] text-cyan-200">
+                        Lead Search — {leadSearchParams?.status}
+                        {leadSearchParams?.called_count !== undefined
+                          ? ` / called_count=${leadSearchParams.called_count}`
+                          : ""}
+                      </h1>
+                    </div>
+
+                    {leadSearchLoading && (
+                      <div className="text-center py-8 text-cyan-300">Chargement des leads...</div>
+                    )}
+                    {leadSearchError && (
+                      <div className="text-red-400 p-4">{leadSearchError}</div>
+                    )}
+
+                    {leadSearchData && (
+                      <>
+                        <div className="mb-4 flex items-center justify-between">
+                          <div className="flex items-center gap-4">
+                            <span className="font-mono text-sm text-slate-400">
+                              {leadSearchData.title}
+                            </span>
+                            <span className="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 font-mono text-xs text-cyan-300">
+                              {leadSearchData.resultCount} résultat(s)
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <button
+                              onClick={handleExportLeadXlsx}
+                              className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 rounded border border-emerald-500/30 transition-colors text-sm font-medium"
+                            >
+                              <Printer size={16} />
+                              Xlsx
+                            </button>
+                            <button
+                              onClick={() => setIsLeadGraphView(!isLeadGraphView)}
+                              className="flex items-center gap-2 px-3 py-1.5 bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 rounded border border-cyan-500/30 transition-colors text-sm font-medium"
+                            >
+                              <BarChart3 size={16} />
+                              {isLeadGraphView ? "Voir Table" : "Graph"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="max-h-[65vh] overflow-y-auto pr-1">
+                          {isLeadGraphView ? (
+                            <LeadGraphView headers={leadSearchData.headers} rows={leadSearchData.rows} />
+                          ) : (
+                            <div className="overflow-x-auto rounded-xl border border-slate-800">
+                              <table className="w-full text-xs font-mono">
+                                <thead className="bg-slate-900/80 text-cyan-400 uppercase sticky top-0">
+                                  <tr>
+                                    {(leadSearchData.headers || []).map((h, i) => (
+                                      <th key={i} className="px-3 py-2 text-left whitespace-nowrap">{h}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(leadSearchData.rows || []).map((row, rIdx) => (
+                                    <tr key={rIdx} className="border-b border-slate-800 last:border-0 hover:bg-slate-800/30">
+                                      {row.map((cell, cIdx) => (
+                                        <td key={cIdx} className="px-3 py-1 text-slate-200 whitespace-nowrap">
+                                          {cell}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      </>
                     )}
                   </div>
                 </section>

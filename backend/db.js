@@ -852,3 +852,5 @@ export async function getRecordedAgentAnalytics(startDate, endDate) {
     statusDistribution,
   };
 }
+
+export { ensureDb, toQueryDateTime };

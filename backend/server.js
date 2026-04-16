@@ -14,6 +14,8 @@ import {
   getRecordedAgentAnalytics,
   getRecordedPauseHistory,
   getRecordedAgentCallsAtHour,
+  ensureDb,
+  toQueryDateTime,
 } from "./db.js";
 import fs from "fs";
 import path from "path";
@@ -2702,6 +2704,149 @@ app.get("/api/activity-display/lists/:listId", async (req, res) => {
   } catch (error) {
     console.error(`[list detail] Error for ${req.params.listId}:`, error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Add this after the existing routes, before bootstrap
+app.get("/api/activity-display/agent-calls-history", async (req, res) => {
+  try {
+    const mode = ["Sec", "Min", "HH", "DD", "W", "MM", "YYYY"].includes(req.query.mode)
+      ? req.query.mode
+      : "Min";
+
+    const source = req.query.source === "record" ? "record" : "realtime";
+    const endDate = toDateSafe(req.query.end) || new Date();
+    const startDate = toDateSafe(req.query.start) || new Date(endDate.getTime() - 60 * 60 * 1000);
+    const agentUser = req.query.agent ? String(req.query.agent).trim() : null;
+
+    if (!agentUser) {
+      // If no agent, return the regular total calls history
+      const series = source === "record"
+        ? await getRecordedHistory(mode, startDate, endDate)
+        : aggregateHistory(mode, startDate, endDate);
+      return res.json({ mode, source, start: startDate.toISOString(), end: endDate.toISOString(), points: series });
+    }
+
+    // For a specific agent, we need to query agent_snapshots
+    const db = ensureDb(); // need to import ensureDb or expose it
+    const startStr = toQueryDateTime(startDate);
+    const endStr = toQueryDateTime(endDate);
+
+    const rows = db.prepare(`
+      SELECT 
+        m.captured_at,
+        a.calls
+      FROM agent_snapshots a
+      JOIN metric_snapshots m ON m.id = a.snapshot_id
+      WHERE a.agent_user = ?
+        AND m.captured_at BETWEEN ? AND ?
+      ORDER BY m.captured_at ASC
+    `).all(agentUser, startStr, endStr);
+
+    // Aggregate per bucket
+    const buckets = new Map();
+    for (const row of rows) {
+      const date = new Date(row.captured_at);
+      const key = getBucketKey(date, mode);
+      if (!buckets.has(key)) {
+        buckets.set(key, { label: key, totalCalls: 0, samples: 0 });
+      }
+      const bucket = buckets.get(key);
+      // calls is the number of calls at that snapshot; we take the maximum or average? 
+      // For call volume, we can sum calls per bucket (if each snapshot is a point in time, calls is cumulative? 
+      // Actually calls column is the total calls handled by the agent up to that snapshot? In VICIdial, it's the number of calls taken.
+      // We'll use the value as is (the count at that snapshot) and average per bucket.
+      bucket.totalCalls += row.calls;
+      bucket.samples += 1;
+    }
+
+    const points = Array.from(buckets.values()).map(b => ({
+      label: b.label,
+      totalCalls: Math.round(b.totalCalls / b.samples) // average calls per bucket
+    }));
+
+    res.json({ mode, source, agent: agentUser, points });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to build agent calls history", details: error.message });
+  }
+});
+
+app.get("/api/activity-display/config", (req, res) => {
+  res.json({ vicidialBaseUrl: VICIDIAL_BASE_URL });
+});
+
+app.get("/api/activity-display/lead-search", async (req, res) => {
+  try {
+    const { list_id, status, called_count } = req.query;
+    if (!list_id || !status) return res.status(400).json({ error: "list_id and status are required" });
+
+    const params = { list_id, status };
+    if (called_count !== undefined) params.called_count = called_count;
+
+    const response = await axios.get(`${VICIDIAL_BASE_URL}/admin_search_lead.php`, {
+      params,
+      timeout: 30000,
+      responseType: "text",
+      auth: { username: VICIDIAL_USERNAME, password: VICIDIAL_PASSWORD },
+      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+      validateStatus: () => true,
+    });
+
+    const $ = cheerio.load(response.data);
+
+    // Parse title and result count
+    const titleText = $("body").text().match(/Lead search:\s*([^\n]+)/)?.[1]?.trim() || "";
+    const resultsMatch = $("b").text().match(/RESULTS:\s*(\d+)/);
+    const resultCount = resultsMatch ? Number(resultsMatch[1]) : 0;
+
+    // Parse the main lead table
+    const headers = [];
+    const tableRows = [];
+
+    // 1. Locate the correct data table. 
+    // Vicidial wraps data in layout tables, so we must find the deepest nested table.
+    let dataTable = null;
+    $("table").each((_, tbl) => {
+      const text = $(tbl).text().toUpperCase();
+      // Match keywords specific to your Lead Search or Status tables
+      if ((text.includes("SUBTOTAL") || text.includes("LEAD ID") || text.includes("STATUS")) && $(tbl).find("tr").length > 2) {
+        // Keep the deepest nested matching table to avoid the main page layout table
+        if (!dataTable || $.contains(dataTable[0], tbl)) {
+          dataTable = $(tbl); 
+        }
+      }
+    });
+
+    // Fallback if keywords don't match: grab the last table without nested tables
+    if (!dataTable || dataTable.length === 0) {
+      dataTable = $("table").filter((_, t) => $(t).find("table").length === 0 && $(t).find("tr").length > 2).last();
+    }
+
+    if (dataTable && dataTable.length > 0) {
+      // 2. Get direct rows only (accounting for optional <tbody> injections by the browser/parser)
+      const rows = dataTable.find("> tr, > tbody > tr");
+
+      rows.each((ri, tr) => {
+        const cells = [];
+        // 3. CRITICAL FIX: Use .children() instead of .find() so we don't flatten nested DOM elements
+        $(tr).children("td, th").each((_, td) => {
+          cells.push($(td).text().replace(/\s+/g, " ").trim());
+        });
+
+        // 4. Populate headers and rows, ignoring purely empty layout rows
+        if (cells.length > 1) {
+          if (headers.length === 0) {
+            headers.push(...cells);
+          } else if (cells.some(c => c !== "")) {
+            tableRows.push(cells);
+          }
+        }
+      });
+    }
+
+    res.json({ title: titleText, resultCount, headers, rows: tableRows });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch lead search", details: err.message });
   }
 });
 
